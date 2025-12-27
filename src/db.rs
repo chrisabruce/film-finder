@@ -69,6 +69,7 @@ impl Database {
                 original_title TEXT,
                 german_title TEXT,
                 original_language TEXT,
+                production_countries TEXT,
                 year INTEGER,
                 genres TEXT,
                 overview TEXT,
@@ -105,6 +106,32 @@ impl Database {
                 ON screenings(is_ov, is_omu, is_english_subs);
             CREATE INDEX IF NOT EXISTS idx_screenings_showtime
                 ON screenings(showtime);
+
+            -- TMDB data cache (persists across scrapes)
+            -- Uses title_lower for case-insensitive uniqueness
+            CREATE TABLE IF NOT EXISTS tmdb_cache (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                title_lower TEXT NOT NULL UNIQUE,
+                tmdb_id INTEGER NOT NULL,
+                english_title TEXT,
+                original_title TEXT,
+                german_title TEXT,
+                original_language TEXT,
+                production_countries TEXT,
+                year INTEGER,
+                genres TEXT,
+                overview TEXT,
+                poster_url TEXT,
+                tmdb_url TEXT,
+                director TEXT,
+                director_id INTEGER,
+                writer TEXT,
+                writer_id INTEGER,
+                cinematographer TEXT,
+                cinematographer_id INTEGER,
+                cached_at TEXT NOT NULL
+            );
             ",
         )?;
         Ok(())
@@ -176,19 +203,88 @@ impl Database {
     }
 
     /// Inserts a movie or returns existing ID if already present.
+    /// Preserves TMDB data from previously scraped movies with the same title.
     pub fn insert_movie(&self, source_id: i64, movie: &Movie) -> Result<i64> {
-        // Try to insert, ignore if already exists
-        self.conn.execute(
-            "INSERT OR IGNORE INTO movies (source_id, external_id, title, runtime_minutes, rating)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                source_id,
-                movie.external_id,
-                movie.title,
-                movie.runtime_minutes,
-                movie.rating
-            ],
-        )?;
+        // Check if we have cached TMDB data for this movie title (case-insensitive)
+        let title_lower = movie.title.to_lowercase();
+        let cached_tmdb: Option<CachedTmdbData> = self
+            .conn
+            .query_row(
+                "SELECT tmdb_id, english_title, original_title, german_title, original_language,
+                        production_countries, year, genres, overview, poster_url, tmdb_url,
+                        director, director_id, writer, writer_id, cinematographer, cinematographer_id
+                 FROM tmdb_cache WHERE title_lower = ?1",
+                params![title_lower],
+                |row| {
+                    Ok(CachedTmdbData {
+                        tmdb_id: row.get(0)?,
+                        english_title: row.get(1)?,
+                        original_title: row.get(2)?,
+                        german_title: row.get(3)?,
+                        original_language: row.get(4)?,
+                        production_countries: row.get(5)?,
+                        year: row.get(6)?,
+                        genres: row.get(7)?,
+                        overview: row.get(8)?,
+                        poster_url: row.get(9)?,
+                        tmdb_url: row.get(10)?,
+                        director: row.get(11)?,
+                        director_id: row.get(12)?,
+                        writer: row.get(13)?,
+                        writer_id: row.get(14)?,
+                        cinematographer: row.get(15)?,
+                        cinematographer_id: row.get(16)?,
+                    })
+                },
+            )
+            .ok();
+
+        // Insert the movie with TMDB data if available
+        if let Some(ref tmdb) = cached_tmdb {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO movies (source_id, external_id, title, runtime_minutes, rating,
+                 tmdb_id, english_title, original_title, german_title, original_language,
+                 production_countries, year, genres, overview, poster_url, tmdb_url,
+                 director, director_id, writer, writer_id, cinematographer, cinematographer_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                params![
+                    source_id,
+                    movie.external_id,
+                    movie.title,
+                    movie.runtime_minutes,
+                    movie.rating,
+                    tmdb.tmdb_id,
+                    tmdb.english_title,
+                    tmdb.original_title,
+                    tmdb.german_title,
+                    tmdb.original_language,
+                    tmdb.production_countries,
+                    tmdb.year,
+                    tmdb.genres,
+                    tmdb.overview,
+                    tmdb.poster_url,
+                    tmdb.tmdb_url,
+                    tmdb.director,
+                    tmdb.director_id,
+                    tmdb.writer,
+                    tmdb.writer_id,
+                    tmdb.cinematographer,
+                    tmdb.cinematographer_id,
+                ],
+            )?;
+        } else {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO movies (source_id, external_id, title, runtime_minutes, rating)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    source_id,
+                    movie.external_id,
+                    movie.title,
+                    movie.runtime_minutes,
+                    movie.rating
+                ],
+            )?;
+        }
 
         // Get the ID (either newly inserted or existing)
         let id: i64 = if let Some(ref ext_id) = movie.external_id {
@@ -235,7 +331,7 @@ impl Database {
         Ok(())
     }
 
-    /// Updates a movie with TMDB data.
+    /// Updates a movie with TMDB data and caches it for future scrapes.
     #[allow(clippy::too_many_arguments)]
     pub fn update_movie_tmdb(
         &self,
@@ -245,6 +341,7 @@ impl Database {
         original_title: &str,
         german_title: Option<&str>,
         original_language: &str,
+        production_countries: Option<&str>,
         year: Option<i32>,
         genres: &str,
         overview: &str,
@@ -257,18 +354,21 @@ impl Database {
         cinematographer_id: Option<i32>,
     ) -> Result<()> {
         let tmdb_url = format!("https://www.themoviedb.org/movie/{}", tmdb_id);
+
+        // Update the movie record
         self.conn.execute(
             "UPDATE movies SET tmdb_id = ?1, english_title = ?2, original_title = ?3, german_title = ?4,
-             original_language = ?5, year = ?6, genres = ?7, overview = ?8, poster_url = ?9, tmdb_url = ?10,
-             director = ?11, director_id = ?12, writer = ?13, writer_id = ?14,
-             cinematographer = ?15, cinematographer_id = ?16
-             WHERE id = ?17",
+             original_language = ?5, production_countries = ?6, year = ?7, genres = ?8, overview = ?9,
+             poster_url = ?10, tmdb_url = ?11, director = ?12, director_id = ?13, writer = ?14, writer_id = ?15,
+             cinematographer = ?16, cinematographer_id = ?17
+             WHERE id = ?18",
             params![
                 tmdb_id,
                 english_title,
                 original_title,
                 german_title,
                 original_language,
+                production_countries,
                 year,
                 genres,
                 overview,
@@ -283,6 +383,47 @@ impl Database {
                 movie_id
             ],
         )?;
+
+        // Get the original scraped title for caching
+        let title: String = self.conn.query_row(
+            "SELECT title FROM movies WHERE id = ?1",
+            params![movie_id],
+            |row| row.get(0),
+        )?;
+
+        // Cache the TMDB data for future scrapes
+        let now = Utc::now().to_rfc3339();
+        let title_lower = title.to_lowercase();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO tmdb_cache
+             (title, title_lower, tmdb_id, english_title, original_title, german_title, original_language,
+              production_countries, year, genres, overview, poster_url, tmdb_url,
+              director, director_id, writer, writer_id, cinematographer, cinematographer_id, cached_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                title,
+                title_lower,
+                tmdb_id,
+                english_title,
+                original_title,
+                german_title,
+                original_language,
+                production_countries,
+                year,
+                genres,
+                overview,
+                poster_url,
+                tmdb_url,
+                director,
+                director_id,
+                writer,
+                writer_id,
+                cinematographer,
+                cinematographer_id,
+                now
+            ],
+        )?;
+
         Ok(())
     }
 
@@ -371,6 +512,28 @@ impl Database {
         let results: Result<Vec<_>, _> = rows.collect();
         Ok(results?)
     }
+}
+
+/// Cached TMDB data for a movie title.
+#[derive(Debug, Clone)]
+struct CachedTmdbData {
+    tmdb_id: i32,
+    english_title: Option<String>,
+    original_title: Option<String>,
+    german_title: Option<String>,
+    original_language: Option<String>,
+    production_countries: Option<String>,
+    year: Option<i32>,
+    genres: Option<String>,
+    overview: Option<String>,
+    poster_url: Option<String>,
+    tmdb_url: Option<String>,
+    director: Option<String>,
+    director_id: Option<i32>,
+    writer: Option<String>,
+    writer_id: Option<i32>,
+    cinematographer: Option<String>,
+    cinematographer_id: Option<i32>,
 }
 
 /// Movie information for the films command.

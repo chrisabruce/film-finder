@@ -2,3 +2,8 @@
 .env
 film-finder.db
 html
+node_modules
+*.pid
+package-lock.json
+package.json
+.wrangler

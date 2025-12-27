@@ -22,6 +22,12 @@ film-finder search avatar
 # Show everything
 film-finder list
 
+# Generate static website
+film-finder static
+
+# Deploy to Cloudflare Pages
+film-finder deploy
+
 # Start fresh
 film-finder db-reset
 ```
@@ -36,6 +42,48 @@ To enable it:
 2. Create a `.env` file: `echo 'TMDB_API_KEY=your_key_here' > .env`
 
 If no API key is set, scraping still works - you just won't get the extra metadata.
+
+## Deploying to Cloudflare Pages
+
+The static site can be deployed to Cloudflare Pages for free hosting.
+
+### Prerequisites
+
+- Node.js/npm installed (for the wrangler CLI)
+- A Cloudflare account
+
+### Setup
+
+1. Create a Cloudflare Pages project:
+   - Go to https://dash.cloudflare.com/ > Pages > Create a project > Direct Upload
+   - Name it (e.g., `film-finder`)
+   - Upload any placeholder file to create the project
+
+2. Get your Cloudflare credentials:
+   - **Account ID**: Found in the right sidebar of your Cloudflare dashboard
+   - **API Token**: Create at https://dash.cloudflare.com/profile/api-tokens
+     - Use "Create Custom Token"
+     - Permissions: Account > Cloudflare Pages > Edit
+     - Account Resources: Include your account
+
+3. Add to your `.env` file:
+   ```
+   CLOUDFLARE_ACCOUNT_ID=your_account_id
+   CLOUDFLARE_API_TOKEN=your_api_token
+   CLOUDFLARE_PROJECT_NAME=film-finder
+   ```
+
+### Deploying
+
+```bash
+# Generate the static site
+film-finder static
+
+# Deploy to Cloudflare Pages
+film-finder deploy
+```
+
+Your site will be available at `https://<project-name>.pages.dev`.
 
 ## What it scrapes
 

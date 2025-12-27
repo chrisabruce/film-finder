@@ -22,6 +22,7 @@ struct MovieData {
     original_title: Option<String>,
     german_title: Option<String>,
     original_language: Option<String>,
+    production_countries: Option<String>,
     year: Option<i32>,
     runtime_minutes: Option<i32>,
     genres: Option<String>,
@@ -127,6 +128,7 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
             m.original_title,
             m.german_title,
             m.original_language,
+            m.production_countries,
             m.year,
             MAX(m.runtime_minutes) as runtime_minutes,
             m.genres,
@@ -156,19 +158,20 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
-            row.get::<_, Option<i32>>(6)?,
+            row.get::<_, Option<String>>(6)?,
             row.get::<_, Option<i32>>(7)?,
-            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<i32>>(8)?,
             row.get::<_, Option<String>>(9)?,
             row.get::<_, Option<String>>(10)?,
             row.get::<_, Option<String>>(11)?,
             row.get::<_, Option<String>>(12)?,
-            row.get::<_, Option<i32>>(13)?,
-            row.get::<_, Option<String>>(14)?,
-            row.get::<_, Option<i32>>(15)?,
-            row.get::<_, Option<String>>(16)?,
-            row.get::<_, Option<i32>>(17)?,
-            row.get::<_, i64>(18)?, // group_key for fetching all related movies
+            row.get::<_, Option<String>>(13)?,
+            row.get::<_, Option<i32>>(14)?,
+            row.get::<_, Option<String>>(15)?,
+            row.get::<_, Option<i32>>(16)?,
+            row.get::<_, Option<String>>(17)?,
+            row.get::<_, Option<i32>>(18)?,
+            row.get::<_, i64>(19)?, // group_key for fetching all related movies
         ))
     })?;
 
@@ -182,6 +185,7 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
             original_title,
             german_title,
             original_language,
+            production_countries,
             year,
             runtime,
             genres,
@@ -272,6 +276,7 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
             original_title,
             german_title,
             original_language,
+            production_countries,
             year,
             runtime_minutes: runtime,
             genres,
@@ -504,6 +509,68 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo]) -> String {
             ));
         }
 
+        // Add language and country info (only shown when expanded)
+        let has_lang_country =
+            movie.original_language.is_some() || movie.production_countries.is_some();
+        if has_lang_country {
+            html.push_str(r#"                <p class="language-country">"#);
+            if let Some(ref lang) = movie.original_language {
+                // Convert language code to full name for common languages
+                let lang_name = match lang.as_str() {
+                    "en" => "English",
+                    "de" => "German",
+                    "fr" => "French",
+                    "es" => "Spanish",
+                    "it" => "Italian",
+                    "ja" => "Japanese",
+                    "ko" => "Korean",
+                    "zh" => "Chinese",
+                    "ru" => "Russian",
+                    "pt" => "Portuguese",
+                    "hi" => "Hindi",
+                    "ar" => "Arabic",
+                    "tr" => "Turkish",
+                    "pl" => "Polish",
+                    "nl" => "Dutch",
+                    "sv" => "Swedish",
+                    "da" => "Danish",
+                    "no" => "Norwegian",
+                    "fi" => "Finnish",
+                    "cs" => "Czech",
+                    "hu" => "Hungarian",
+                    "el" => "Greek",
+                    "he" => "Hebrew",
+                    "th" => "Thai",
+                    "vi" => "Vietnamese",
+                    "id" => "Indonesian",
+                    "uk" => "Ukrainian",
+                    "ro" => "Romanian",
+                    "fa" => "Persian",
+                    "bn" => "Bengali",
+                    "ta" => "Tamil",
+                    "te" => "Telugu",
+                    "mr" => "Marathi",
+                    "cn" => "Cantonese",
+                    "tl" => "Tagalog",
+                    _ => lang.as_str(),
+                };
+                html.push_str(&format!(
+                    r#"<span class="original-lang">{}</span>"#,
+                    escape_html(lang_name)
+                ));
+            }
+            if let Some(ref countries) = movie.production_countries {
+                if movie.original_language.is_some() {
+                    html.push_str(r#"<span class="separator"> · </span>"#);
+                }
+                html.push_str(&format!(
+                    r#"<span class="countries">{}</span>"#,
+                    escape_html(countries)
+                ));
+            }
+            html.push_str("</p>\n");
+        }
+
         if !runtime_str.is_empty() || movie.genres.is_some() {
             html.push_str(r#"                <p class="movie-meta">"#);
             if let Some(ref genres) = movie.genres {
@@ -692,18 +759,24 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo]) -> String {
         );
     }
 
-    html.push_str(
+    // Get current time for "last updated"
+    let now = Utc::now().with_timezone(&Berlin);
+    let updated_str = now.format("%B %d, %Y at %H:%M").to_string();
+
+    html.push_str(&format!(
         r#"    </main>
 
     <footer class="site-footer">
         <p>Data from UCI Kinowelt, CineStar, and Yorck cinemas. Movie info from TMDB.</p>
+        <p class="last-updated">Last updated: {}</p>
     </footer>
 
     <script src="app.js"></script>
 </body>
 </html>
 "#,
-    );
+        updated_str
+    ));
 
     html
 }
@@ -1009,6 +1082,26 @@ body {
     display: block;
 }
 
+.language-country {
+    display: none;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+
+.movie-card.expanded .language-country {
+    display: block;
+}
+
+.language-country .original-lang {
+    font-weight: 500;
+}
+
+.language-country .separator {
+    color: var(--text-muted);
+}
+
 .tmdb-link {
     display: none;
     align-items: center;
@@ -1049,15 +1142,17 @@ body {
 
 .movie-crew {
     padding: 0 1rem 0.5rem;
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 0.125rem 0.5rem;
     font-size: 0.8125rem;
 }
 
 .movie-crew dt {
     color: var(--text-muted);
     font-weight: 500;
+    margin-top: 0.25rem;
+}
+
+.movie-crew dt:first-child {
+    margin-top: 0;
 }
 
 .movie-crew dd {
@@ -1194,6 +1289,12 @@ body {
     margin-top: 2rem;
 }
 
+.last-updated {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    opacity: 0.7;
+}
+
 /* Mobile adjustments */
 @media (max-width: 768px) {
     .site-header h1 {
@@ -1216,14 +1317,6 @@ body {
 
     .movie-header h2 {
         font-size: 1rem;
-    }
-
-    .movie-crew {
-        display: none;
-    }
-
-    .movie-card.expanded .movie-crew {
-        display: grid;
     }
 
     .screening {

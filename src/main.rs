@@ -59,6 +59,9 @@ async fn main() -> Result<()> {
             });
             cmd_static(&output_dir)?;
         }
+        "deploy" => cmd_deploy()?,
+        "serve" => cmd_serve().await?,
+        "stop" => cmd_stop()?,
         "db-reset" => cmd_db_reset()?,
         "help" | "--help" | "-h" => print_help(),
         _ => {
@@ -84,6 +87,9 @@ COMMANDS:
     ov              Show only OV/OmU (Original Version) screenings
     search <query> [--ov]  Search for a movie by title (--ov for OV only)
     static [path]   Generate static website (default: html/)
+    deploy          Deploy static site to Cloudflare Pages
+    serve           Start background service (scrape + static + deploy every N hours)
+    stop            Stop the background service
     db-reset        Delete the database and start fresh
     help            Show this help message
 
@@ -93,6 +99,9 @@ EXAMPLES:
     film-finder ov
     film-finder search avatar
     film-finder static ./public
+    film-finder deploy
+    film-finder serve           # Run in foreground
+    film-finder serve --daemon  # Detach and run in background
 "#
     );
 }
@@ -199,6 +208,7 @@ async fn enrich_with_tmdb(db: &Database) -> Result<()> {
                     &tmdb.original_title,
                     tmdb.german_title.as_deref(),
                     &tmdb.original_language,
+                    tmdb.production_countries.as_deref(),
                     tmdb.year,
                     &tmdb.genres,
                     &tmdb.overview,
@@ -298,6 +308,234 @@ fn cmd_db_reset() -> Result<()> {
 fn cmd_static(output_dir: &str) -> Result<()> {
     let db = Database::open(DB_PATH)?;
     generate_static_site(&db, output_dir)?;
+    Ok(())
+}
+
+/// Deploys the static site to Cloudflare Pages using wrangler.
+fn cmd_deploy() -> Result<()> {
+    use std::process::Command;
+
+    // Load .env file
+    let _ = dotenvy::dotenv();
+
+    // Load required environment variables
+    let account_id = std::env::var("CLOUDFLARE_ACCOUNT_ID")
+        .map_err(|_| anyhow::anyhow!("CLOUDFLARE_ACCOUNT_ID not set in .env"))?;
+    let api_token = std::env::var("CLOUDFLARE_API_TOKEN")
+        .map_err(|_| anyhow::anyhow!("CLOUDFLARE_API_TOKEN not set in .env"))?;
+    let project_name = std::env::var("CLOUDFLARE_PROJECT_NAME")
+        .map_err(|_| anyhow::anyhow!("CLOUDFLARE_PROJECT_NAME not set in .env"))?;
+
+    // Get output directory (same logic as static command)
+    let output_dir = std::env::var("STATIC_OUTPUT_DIR").unwrap_or_else(|_| "html".to_string());
+
+    // Check that the output directory exists
+    if !std::path::Path::new(&output_dir).exists() {
+        return Err(anyhow::anyhow!(
+            "Output directory '{}' does not exist. Run 'film-finder static' first.",
+            output_dir
+        ));
+    }
+
+    println!("Deploying {} to Cloudflare Pages...", output_dir);
+    println!("Project: {}", project_name);
+
+    // Run wrangler via npx
+    let status = Command::new("npx")
+        .args([
+            "wrangler",
+            "pages",
+            "deploy",
+            &output_dir,
+            "--project-name",
+            &project_name,
+        ])
+        .env("CLOUDFLARE_ACCOUNT_ID", &account_id)
+        .env("CLOUDFLARE_API_TOKEN", &api_token)
+        .status();
+
+    match status {
+        Ok(exit_status) => {
+            if exit_status.success() {
+                println!("\nDeployment complete!");
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "Wrangler exited with status: {}",
+                    exit_status
+                ))
+            }
+        }
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Err(anyhow::anyhow!(
+                    "npx not found. Please install Node.js: https://nodejs.org/"
+                ))
+            } else {
+                Err(anyhow::anyhow!("Failed to run wrangler: {}", e))
+            }
+        }
+    }
+}
+
+/// Runs the update cycle: scrape → static → deploy
+async fn run_update_cycle() -> Result<()> {
+    println!("Starting update cycle...");
+
+    // Scrape
+    if let Err(e) = cmd_scrape().await {
+        eprintln!("Scrape failed: {}", e);
+        return Err(e);
+    }
+
+    // Generate static site
+    let output_dir = std::env::var("STATIC_OUTPUT_DIR").unwrap_or_else(|_| "html".to_string());
+    if let Err(e) = cmd_static(&output_dir) {
+        eprintln!("Static site generation failed: {}", e);
+        return Err(e);
+    }
+
+    // Deploy
+    if let Err(e) = cmd_deploy() {
+        eprintln!("Deploy failed: {}", e);
+        return Err(e);
+    }
+
+    println!("Update cycle complete.");
+    Ok(())
+}
+
+/// Starts the background service that periodically updates the site.
+async fn cmd_serve() -> Result<()> {
+    use std::time::Duration;
+
+    // Load .env file
+    let _ = dotenvy::dotenv();
+
+    // Check for --daemon flag
+    let args: Vec<String> = std::env::args().collect();
+    let daemon_mode = args.iter().any(|a| a == "--daemon" || a == "-d");
+
+    // Get update interval from env (default 12 hours)
+    let interval_hours: u64 = std::env::var("UPDATE_INTERVAL_HOURS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+
+    let interval = Duration::from_secs(interval_hours * 60 * 60);
+
+    if daemon_mode {
+        // Fork and detach
+        daemonize()?;
+    }
+
+    println!("Film Finder service started");
+    println!("Update interval: {} hours", interval_hours);
+    println!("PID: {}", std::process::id());
+
+    // Write PID file for management
+    let pid_file = std::env::var("PID_FILE").unwrap_or_else(|_| "film-finder.pid".to_string());
+    std::fs::write(&pid_file, std::process::id().to_string())?;
+
+    // Run initial update
+    if let Err(e) = run_update_cycle().await {
+        eprintln!("Initial update failed: {}", e);
+    }
+
+    // Schedule periodic updates
+    loop {
+        let next_run = Utc::now() + chrono::Duration::seconds(interval.as_secs() as i64);
+        println!(
+            "Next update scheduled for: {}",
+            next_run.with_timezone(&Berlin).format("%Y-%m-%d %H:%M:%S")
+        );
+
+        tokio::time::sleep(interval).await;
+
+        if let Err(e) = run_update_cycle().await {
+            eprintln!("Update cycle failed: {}", e);
+            // Continue running despite errors
+        }
+    }
+}
+
+/// Daemonizes the current process (Unix only).
+fn daemonize() -> Result<()> {
+    use std::process::{Command, Stdio};
+
+    // Get current executable and args
+    let exe = std::env::current_exe()?;
+    let args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a != "--daemon" && a != "-d")
+        .collect();
+
+    // Spawn detached child process
+    let child = Command::new(&exe)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    println!("Daemon started with PID: {}", child.id());
+    std::process::exit(0);
+}
+
+/// Stops the background service by reading the PID file and sending SIGTERM.
+fn cmd_stop() -> Result<()> {
+    // Load .env file
+    let _ = dotenvy::dotenv();
+
+    let pid_file = std::env::var("PID_FILE").unwrap_or_else(|_| "film-finder.pid".to_string());
+
+    // Read PID from file
+    let pid_str = match std::fs::read_to_string(&pid_file) {
+        Ok(s) => s,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                println!("No service running (PID file not found: {})", pid_file);
+                return Ok(());
+            }
+            return Err(anyhow::anyhow!("Failed to read PID file: {}", e));
+        }
+    };
+
+    let pid: i32 = pid_str
+        .trim()
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid PID in file: {}", pid_str.trim()))?;
+
+    // Send SIGTERM to the process
+    #[cfg(unix)]
+    {
+        use std::process::Command;
+        let status = Command::new("kill").arg(pid.to_string()).status();
+
+        match status {
+            Ok(exit) if exit.success() => {
+                println!("Stopped service (PID: {})", pid);
+                // Remove PID file
+                let _ = std::fs::remove_file(&pid_file);
+            }
+            Ok(_) => {
+                // Process might already be dead
+                println!("Process {} not running", pid);
+                let _ = std::fs::remove_file(&pid_file);
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to stop process: {}", e));
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        return Err(anyhow::anyhow!(
+            "Stop command only supported on Unix systems"
+        ));
+    }
+
     Ok(())
 }
 

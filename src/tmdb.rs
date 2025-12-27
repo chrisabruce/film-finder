@@ -54,6 +54,7 @@ pub struct TmdbMovie {
     pub original_title: String,
     pub german_title: Option<String>,
     pub original_language: String,
+    pub production_countries: Option<String>,
     pub year: Option<i32>,
     pub genres: String,
     pub overview: String,
@@ -80,10 +81,17 @@ struct CrewMember {
     job: String,
 }
 
-/// Movie details for fetching localized titles.
+/// Movie details for fetching localized titles and additional info.
 #[derive(Debug, Deserialize)]
 struct MovieDetails {
     title: String,
+    #[serde(default)]
+    production_countries: Vec<ProductionCountry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductionCountry {
+    name: String,
 }
 
 impl TmdbClient {
@@ -198,14 +206,28 @@ impl TmdbClient {
     }
 
     /// Fetches the German title for a movie.
-    async fn fetch_german_title(&self, movie_id: i32) -> Result<Option<String>> {
+    /// Fetches the German title and production countries for a movie.
+    async fn fetch_movie_details(&self, movie_id: i32) -> Result<(Option<String>, Option<String>)> {
         let url = format!(
             "{}/movie/{}?api_key={}&language=de-DE",
             TMDB_API_BASE, movie_id, self.api_key
         );
 
         let resp: MovieDetails = self.client.get(&url).send().await?.json().await?;
-        Ok(Some(resp.title))
+
+        let countries = if resp.production_countries.is_empty() {
+            None
+        } else {
+            Some(
+                resp.production_countries
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        };
+
+        Ok((Some(resp.title), countries))
     }
 
     /// Searches for a movie and returns enriched data.
@@ -241,15 +263,15 @@ impl TmdbClient {
             .poster_path
             .map(|p| format!("{}{}", TMDB_IMAGE_BASE, p));
 
-        // Fetch credits and German title concurrently
-        let (credits_result, german_result) = tokio::join!(
+        // Fetch credits and movie details concurrently
+        let (credits_result, details_result) = tokio::join!(
             self.fetch_credits(result.id),
-            self.fetch_german_title(result.id)
+            self.fetch_movie_details(result.id)
         );
 
         let (director, director_id, writer, writer_id, cinematographer, cinematographer_id) =
             credits_result.unwrap_or((None, None, None, None, None, None));
-        let german_title = german_result.ok().flatten();
+        let (german_title, production_countries) = details_result.unwrap_or((None, None));
 
         Ok(Some(TmdbMovie {
             tmdb_id: result.id,
@@ -257,6 +279,7 @@ impl TmdbClient {
             original_title: result.original_title,
             german_title,
             original_language: result.original_language,
+            production_countries,
             year,
             genres: genres_str,
             overview: result.overview.unwrap_or_default(),
