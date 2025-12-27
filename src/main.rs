@@ -461,6 +461,7 @@ async fn cmd_serve() -> Result<()> {
 
 /// Daemonizes the current process (Unix only).
 fn daemonize() -> Result<()> {
+    use std::fs::OpenOptions;
     use std::process::{Command, Stdio};
 
     // Get current executable and args
@@ -470,15 +471,28 @@ fn daemonize() -> Result<()> {
         .filter(|a| a != "--daemon" && a != "-d")
         .collect();
 
-    // Spawn detached child process
+    // Get log file path from env (default: film-finder.log)
+    let log_file = std::env::var("LOG_FILE").unwrap_or_else(|_| "film-finder.log".to_string());
+
+    // Open log file for appending
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file)
+        .map_err(|e| anyhow::anyhow!("Failed to open log file {}: {}", log_file, e))?;
+
+    let log_err = log.try_clone()?;
+
+    // Spawn detached child process with output to log file
     let child = Command::new(&exe)
         .args(&args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
         .spawn()?;
 
     println!("Daemon started with PID: {}", child.id());
+    println!("Logging to: {}", log_file);
     std::process::exit(0);
 }
 
