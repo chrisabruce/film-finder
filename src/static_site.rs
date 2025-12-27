@@ -1218,14 +1218,39 @@ body {
         font-size: 1rem;
     }
 
-    .screening {
-        grid-template-columns: auto 1fr;
-        gap: 0.5rem;
+    .movie-crew {
+        display: none;
     }
 
-    .screening-tags,
+    .movie-card.expanded .movie-crew {
+        display: grid;
+    }
+
+    .screening {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.25rem 0.5rem;
+        padding: 0.5rem 0;
+        font-size: 0.875rem;
+        border-bottom: 1px solid var(--bg-hover);
+    }
+
+    .screening time {
+        min-width: 3rem;
+    }
+
+    .theater-name {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .screening-tags {
+        width: auto;
+    }
+
     .screening a {
-        grid-column: 1 / -1;
+        margin-left: auto;
     }
 
     .theater-list {
