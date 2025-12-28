@@ -74,13 +74,19 @@ pub fn generate_static_site(db: &Database, output_dir: &str) -> Result<()> {
     let theaters = fetch_theaters(db)?;
     let movies = fetch_ov_movies(db)?;
 
+    // Generate cache-busting version string (Unix timestamp)
+    let cache_version = Utc::now().timestamp();
+
     // Generate HTML
-    let html = generate_html(&movies, &theaters);
+    let html = generate_html(&movies, &theaters, cache_version);
 
     // Write files
     fs::write(output_path.join("index.html"), html)?;
     fs::write(output_path.join("style.css"), generate_css())?;
     fs::write(output_path.join("app.js"), generate_js())?;
+
+    // Write Cloudflare Pages _headers file for cache control
+    fs::write(output_path.join("_headers"), generate_headers())?;
 
     println!(
         "Static site generated: {}/index.html",
@@ -296,18 +302,18 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
     Ok(movies)
 }
 
-fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo]) -> String {
+fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: i64) -> String {
     let mut html = String::new();
 
-    // DOCTYPE and head
-    html.push_str(
+    // DOCTYPE and head (with cache-busting version on CSS)
+    html.push_str(&format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Film Finder - OV Movies in Berlin</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v={}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -327,7 +333,8 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo]) -> String {
                 <button type="button" id="select-none">Clear All</button>
                 <ul class="theater-list">
 "#,
-    );
+        cache_version
+    ));
 
     // Group theaters by source
     let mut theaters_by_source: HashMap<String, Vec<&TheaterInfo>> = HashMap::new();
@@ -771,11 +778,11 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo]) -> String {
         <p class="last-updated">Last updated: {}</p>
     </footer>
 
-    <script src="app.js"></script>
+    <script src="app.js?v={}"></script>
 </body>
 </html>
 "#,
-        updated_str
+        updated_str, cache_version
     ));
 
     html
@@ -1383,6 +1390,53 @@ document.addEventListener('DOMContentLoaded', () => {
     const showAllOvCheckbox = document.getElementById('show-all-ov');
     const searchInput = document.getElementById('search');
 
+    const STORAGE_KEY = 'filmFinderPrefs';
+
+    // Load saved preferences from localStorage
+    function loadPreferences() {
+        try {
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (!saved) return null;
+            return JSON.parse(saved);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Save preferences to localStorage
+    function savePreferences() {
+        const prefs = {
+            selectedTheaters: Array.from(theaterCheckboxes)
+                .filter(cb => cb.checked)
+                .map(cb => cb.value),
+            showAllOv: showAllOvCheckbox?.checked || false
+        };
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+        } catch (e) {
+            // Ignore storage errors
+        }
+    }
+
+    // Apply saved preferences
+    function applyPreferences() {
+        const prefs = loadPreferences();
+        if (!prefs) return;
+
+        // Apply theater selections
+        if (prefs.selectedTheaters) {
+            const selected = new Set(prefs.selectedTheaters);
+            theaterCheckboxes.forEach(cb => {
+                cb.checked = selected.has(cb.value);
+            });
+        }
+
+        // Apply show all OV setting
+        if (showAllOvCheckbox && typeof prefs.showAllOv === 'boolean') {
+            showAllOvCheckbox.checked = prefs.showAllOv;
+        }
+    }
+
     // Movie card expansion
     movieCards.forEach(card => {
         card.addEventListener('click', (e) => {
@@ -1459,21 +1513,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     theaterCheckboxes.forEach(cb => {
-        cb.addEventListener('change', updateMoviesVisibility);
+        cb.addEventListener('change', () => {
+            updateMoviesVisibility();
+            savePreferences();
+        });
     });
 
-    showAllOvCheckbox?.addEventListener('change', updateMoviesVisibility);
+    showAllOvCheckbox?.addEventListener('change', () => {
+        updateMoviesVisibility();
+        savePreferences();
+    });
 
     searchInput?.addEventListener('input', updateMoviesVisibility);
 
     selectAllBtn?.addEventListener('click', () => {
         theaterCheckboxes.forEach(cb => cb.checked = true);
         updateMoviesVisibility();
+        savePreferences();
     });
 
     selectNoneBtn?.addEventListener('click', () => {
         theaterCheckboxes.forEach(cb => cb.checked = false);
         updateMoviesVisibility();
+        savePreferences();
     });
 
     // Keyboard navigation
@@ -1494,9 +1556,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Initial filter (English only by default)
+    // Apply saved preferences and run initial filter
+    applyPreferences();
     updateMoviesVisibility();
 });
+"#
+}
+
+fn generate_headers() -> &'static str {
+    r#"# Cloudflare Pages cache headers
+
+# HTML should be revalidated frequently
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# CSS and JS use cache-busting query strings, so can be cached longer
+/*.css
+  Cache-Control: public, max-age=31536000, immutable
+
+/*.js
+  Cache-Control: public, max-age=31536000, immutable
 "#
 }
 
