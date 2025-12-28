@@ -344,7 +344,7 @@ fn parse_meta(text: &str) -> (Option<i32>, Option<String>) {
     let mut rating = None;
 
     // Look for runtime like "193min"
-    if let Some(caps) = regex_lite::Regex::new(r"(\d+)\s*min")
+    if let Some(caps) = regex::Regex::new(r"(\d+)\s*min")
         .ok()
         .and_then(|re| re.captures(text))
     {
@@ -352,7 +352,7 @@ fn parse_meta(text: &str) -> (Option<i32>, Option<String>) {
     }
 
     // Look for FSK rating
-    if let Some(caps) = regex_lite::Regex::new(r"FSK\s*(\d+)")
+    if let Some(caps) = regex::Regex::new(r"FSK\s*(\d+)")
         .ok()
         .and_then(|re| re.captures(text))
     {

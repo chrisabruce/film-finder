@@ -21,7 +21,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 
 # Regex for parsing
-regex-lite = "0.1"
+regex = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

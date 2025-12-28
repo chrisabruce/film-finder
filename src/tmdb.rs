@@ -230,13 +230,109 @@ impl TmdbClient {
         Ok((Some(resp.title), countries))
     }
 
+    /// Cleans a movie title by removing common suffixes added by theaters.
+    fn clean_title(title: &str) -> Vec<String> {
+        let mut variations = Vec::new();
+
+        // Normalize dashes first (en-dash, em-dash -> hyphen)
+        let normalized = title.replace('–', "-").replace('—', "-");
+
+        // Original title first
+        variations.push(title.to_string());
+        if normalized != title {
+            variations.push(normalized.clone());
+        }
+
+        // Common patterns to remove (case-insensitive)
+        // Using [-–—] to match hyphen, en-dash, and em-dash
+        let dash = r"[-–—]";
+        let patterns = [
+            // Language/subtitle markers
+            r"\s*\(OV\)\s*$".to_string(),
+            r"\s*\(OmU\)\s*$".to_string(),
+            r"\s*\(OmeU\)\s*$".to_string(),
+            r"\s*\(OF\)\s*$".to_string(),
+            r"\s*\(OmE\)\s*$".to_string(),
+            r"\s*OV\s*$".to_string(),
+            r"\s*OmU\s*$".to_string(),
+            r"\s*OmeU\s*$".to_string(),
+            // Theater promotions (with flexible dash matching)
+            format!(r"\s*{}\s*[Bb]est\s+of\s+[Cc]inema\s*$", dash),
+            format!(r"\s*{}\s*[Bb]est\s+[Cc]inema\s*$", dash),
+            format!(r"\s*{}\s*[Bb]estes\s+[Kk]ino\s*$", dash),
+            format!(r"\s*{}\s*[Pp]remiere\s+zum\s+[Kk]inostart\s*$", dash),
+            format!(r"\s*{}\s*[Pp]remiere\s*$", dash),
+            format!(r"\s*{}\s*[Pp]review\s*$", dash),
+            format!(r"\s*{}\s*[Ss]neak\s*$", dash),
+            format!(r"\s*{}\s*[Ss]ondervorstellung\s*$", dash),
+            // 3D markers
+            r"\s*\(?3D\)?\s*$".to_string(),
+            format!(r"\s*{}\s*3D\s*$", dash),
+            // IMAX markers
+            r"\s*\(?IMAX\)?\s*$".to_string(),
+            format!(r"\s*{}\s*IMAX\s*$", dash),
+            // Dolby markers
+            r"\s*\(?Dolby\s*(?:Atmos|Cinema)?\)?\s*$".to_string(),
+            // Generic dash suffix (e.g., "Movie - Something") - try last
+            format!(r"\s*{}\s*[^-–—]+$", dash),
+        ];
+
+        let mut current = title.to_string();
+        for pattern in &patterns {
+            if let Ok(re) = regex::Regex::new(&format!("(?i){}", pattern)) {
+                let cleaned = re.replace(&current, "").trim().to_string();
+                if !cleaned.is_empty() && cleaned != current && !variations.contains(&cleaned) {
+                    variations.push(cleaned.clone());
+                    current = cleaned;
+                }
+            }
+        }
+
+        // Also try with normalized dashes
+        let mut current_normalized = normalized.clone();
+        for pattern in &patterns {
+            if let Ok(re) = regex::Regex::new(&format!("(?i){}", pattern)) {
+                let cleaned = re.replace(&current_normalized, "").trim().to_string();
+                if !cleaned.is_empty()
+                    && cleaned != current_normalized
+                    && !variations.contains(&cleaned)
+                {
+                    variations.push(cleaned.clone());
+                    current_normalized = cleaned;
+                }
+            }
+        }
+
+        // Also try removing anything in parentheses at the end
+        if let Ok(re) = regex::Regex::new(r"\s*\([^)]+\)\s*$") {
+            let cleaned = re.replace(title, "").trim().to_string();
+            if !cleaned.is_empty() && !variations.contains(&cleaned) {
+                variations.push(cleaned);
+            }
+        }
+
+        variations
+    }
+
     /// Searches for a movie and returns enriched data.
+    /// Tries multiple title variations to handle theater-added suffixes.
     pub async fn lookup_movie(
         &self,
         title: &str,
         genre_map: &HashMap<i32, String>,
     ) -> Result<Option<TmdbMovie>> {
-        let result = match self.search_movie(title).await? {
+        // Try different title variations
+        let variations = Self::clean_title(title);
+        let mut result = None;
+
+        for variant in &variations {
+            if let Some(r) = self.search_movie(variant).await? {
+                result = Some(r);
+                break;
+            }
+        }
+
+        let result = match result {
             Some(r) => r,
             None => return Ok(None),
         };

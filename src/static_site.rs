@@ -358,12 +358,13 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
             html.push_str(&format!(
                 r#"                            <li>
                                 <label>
-                                    <input type="checkbox" name="theater" value="{}" checked>
+                                    <input type="checkbox" name="theater" value="{}" data-name="{}" checked>
                                     {}
                                 </label>
                             </li>
 "#,
                 theater.id,
+                escape_html(&theater.name),
                 escape_html(&theater.name)
             ));
         }
@@ -415,10 +416,18 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
                 escape_html(display_title)
             )
         } else {
-            format!(
-                r#"<span class="no-poster">{}</span>"#,
-                escape_html(&display_title.chars().next().unwrap_or('?').to_string())
-            )
+            // Check for special event types when no TMDB poster
+            let title_lower = movie.title.to_lowercase();
+            if title_lower.contains("sneak") || title_lower == "classic sneak" {
+                r#"<span class="no-poster sneak-preview"><svg viewBox="0 0 100 100" fill="currentColor"><circle cx="50" cy="35" r="20" fill="none" stroke="currentColor" stroke-width="4"/><path d="M30 35 Q30 55 50 55 Q70 55 70 35" fill="none" stroke="currentColor" stroke-width="4"/><circle cx="50" cy="35" r="8"/><text x="50" y="80" text-anchor="middle" font-size="12" font-weight="bold">SNEAK</text><text x="50" y="93" text-anchor="middle" font-size="10">PREVIEW</text></svg></span>"#.to_string()
+            } else if title_lower.contains("festival") || title_lower.contains("filmfest") {
+                r#"<span class="no-poster film-festival"><svg viewBox="0 0 100 100" fill="currentColor"><rect x="35" y="15" width="30" height="45" rx="3" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="42" cy="25" r="4"/><circle cx="42" cy="35" r="4"/><circle cx="42" cy="45" r="4"/><circle cx="58" cy="25" r="4"/><circle cx="58" cy="35" r="4"/><circle cx="58" cy="45" r="4"/><path d="M25 60 L50 75 L75 60" fill="none" stroke="currentColor" stroke-width="3"/><text x="50" y="90" text-anchor="middle" font-size="10" font-weight="bold">FILM FESTIVAL</text></svg></span>"#.to_string()
+            } else {
+                format!(
+                    r#"<span class="no-poster">{}</span>"#,
+                    escape_html(&display_title.chars().next().unwrap_or('?').to_string())
+                )
+            }
         };
 
         // Collect theater IDs for this movie
@@ -1057,6 +1066,26 @@ body {
     background: linear-gradient(135deg, var(--bg-secondary), var(--bg-hover));
 }
 
+.no-poster.sneak-preview {
+    background: linear-gradient(135deg, #1a1a2e, #2d1b4e);
+    color: #a78bfa;
+}
+
+.no-poster.sneak-preview svg {
+    width: 60%;
+    height: auto;
+}
+
+.no-poster.film-festival {
+    background: linear-gradient(135deg, #1a2e1a, #2e4a1a);
+    color: #86efac;
+}
+
+.no-poster.film-festival svg {
+    width: 60%;
+    height: auto;
+}
+
 .movie-header {
     padding: 1rem;
 }
@@ -1392,8 +1421,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const STORAGE_KEY = 'filmFinderPrefs';
 
+    // Check if localStorage is available (Safari private mode throws on access)
+    function storageAvailable() {
+        try {
+            const test = '__storage_test__';
+            localStorage.setItem(test, test);
+            localStorage.removeItem(test);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    const canUseStorage = storageAvailable();
+
     // Load saved preferences from localStorage
     function loadPreferences() {
+        if (!canUseStorage) return null;
         try {
             const saved = localStorage.getItem(STORAGE_KEY);
             if (!saved) return null;
@@ -1403,13 +1447,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Save preferences to localStorage
+    // Save preferences to localStorage (by theater name for stability across DB resets)
     function savePreferences() {
+        if (!canUseStorage) return;
         const prefs = {
             selectedTheaters: Array.from(theaterCheckboxes)
-                .filter(cb => cb.checked)
-                .map(cb => cb.value),
-            showAllOv: showAllOvCheckbox?.checked || false
+                .filter(function(cb) { return cb.checked; })
+                .map(function(cb) { return cb.dataset.name || cb.value; }),
+            showAllOv: showAllOvCheckbox ? showAllOvCheckbox.checked : false
         };
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
@@ -1423,11 +1468,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const prefs = loadPreferences();
         if (!prefs) return;
 
-        // Apply theater selections
-        if (prefs.selectedTheaters) {
+        // Apply theater selections (match by name for stability)
+        if (prefs.selectedTheaters && Array.isArray(prefs.selectedTheaters)) {
             const selected = new Set(prefs.selectedTheaters);
-            theaterCheckboxes.forEach(cb => {
-                cb.checked = selected.has(cb.value);
+            theaterCheckboxes.forEach(function(cb) {
+                var name = cb.dataset.name || cb.value;
+                cb.checked = selected.has(name);
             });
         }
 
