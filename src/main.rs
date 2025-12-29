@@ -108,6 +108,9 @@ EXAMPLES:
 
 /// Scrapes all configured sources and updates the database.
 async fn cmd_scrape() -> Result<()> {
+    // Load .env file for DEBUG_SCRAPERS and other settings
+    let _ = dotenvy::dotenv();
+
     println!("Film Finder - Updating showtime data...\n");
 
     let db = Database::open(DB_PATH)?;

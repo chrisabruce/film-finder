@@ -9,6 +9,14 @@ use chrono_tz::Europe::Berlin;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use std::collections::HashSet;
+use std::env;
+
+/// Returns true if DEBUG_SCRAPERS env var is set to "true"
+fn debug_enabled() -> bool {
+    env::var("DEBUG_SCRAPERS")
+        .map(|v| v.to_lowercase() == "true")
+        .unwrap_or(false)
+}
 
 use crate::models::{Movie, MovieWithScreenings, Screening, Theater, TheaterData};
 use crate::scraper::Scraper;
@@ -191,6 +199,12 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
     let document = Html::parse_document(html);
     let mut movies = Vec::new();
     let mut seen_urls: HashSet<String> = HashSet::new();
+    let debug = debug_enabled();
+
+    // Debug: log HTML size
+    if debug {
+        eprintln!("[DEBUG] HTML size: {} bytes", html.len());
+    }
 
     // Film containers have class "film show"
     let film_selector = Selector::parse("div.film.show").unwrap();
@@ -211,14 +225,50 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
     // Schedule rows for date context
     let row_selector = Selector::parse("tr.schedule-container-date").unwrap();
 
-    for film_elem in document.select(&film_selector) {
+    // Debug: count film elements
+    let film_elements: Vec<_> = document.select(&film_selector).collect();
+    if debug {
+        eprintln!(
+            "[DEBUG] Found {} elements matching 'div.film.show'",
+            film_elements.len()
+        );
+        if film_elements.is_empty() {
+            // Try to find what elements exist to help diagnose
+            let div_count = document.select(&Selector::parse("div").unwrap()).count();
+            let film_class_count = document
+                .select(&Selector::parse("div.film").unwrap())
+                .count();
+            eprintln!("[DEBUG] Total div elements: {}", div_count);
+            eprintln!("[DEBUG] Elements with 'div.film': {}", film_class_count);
+            // Sample first 500 chars of body for inspection
+            if let Some(body) = document.select(&Selector::parse("body").unwrap()).next() {
+                let body_text = body.html();
+                let sample: String = body_text.chars().take(1000).collect();
+                eprintln!("[DEBUG] HTML body sample (first 1000 chars):\n{}", sample);
+            }
+        }
+    }
+
+    let mut titles_without_screenings = 0;
+    let mut date_parse_failures = 0;
+    let mut time_parse_failures = 0;
+
+    for film_elem in film_elements {
         // Get movie title
         let title = match film_elem.select(&title_selector).next() {
             Some(el) => el.text().collect::<String>().trim().to_string(),
-            None => continue,
+            None => {
+                if debug {
+                    eprintln!("[DEBUG] Film element missing title (selector: h2.eventkalender--item--description--text--eventtitle a)");
+                }
+                continue;
+            }
         };
 
         if title.is_empty() {
+            if debug {
+                eprintln!("[DEBUG] Film element has empty title");
+            }
             continue;
         }
 
@@ -253,15 +303,35 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
         let mut screenings = Vec::new();
 
         // Parse all schedule rows
-        for row in film_elem.select(&row_selector) {
+        let schedule_rows: Vec<_> = film_elem.select(&row_selector).collect();
+        if debug && schedule_rows.is_empty() {
+            eprintln!(
+                "[DEBUG] Movie '{}' has no schedule rows (tr.schedule-container-date)",
+                title
+            );
+        }
+
+        for row in schedule_rows {
             // Get date from row's data-date attribute (format: "20251227")
-            let date = row
-                .value()
-                .attr("data-date")
-                .and_then(|d| parse_date_compact(d));
+            let date_attr = row.value().attr("data-date");
+            let date = date_attr.and_then(|d| parse_date_compact(d));
+
+            if debug && date_attr.is_some() && date.is_none() {
+                date_parse_failures += 1;
+                eprintln!(
+                    "[DEBUG] Failed to parse date '{}' for movie '{}'",
+                    date_attr.unwrap(),
+                    title
+                );
+            }
 
             // Get all performances in this row
-            for perf in row.select(&performance_selector) {
+            let performances: Vec<_> = row.select(&performance_selector).collect();
+            if debug && performances.is_empty() {
+                eprintln!("[DEBUG] Movie '{}' row has no performances (a.performance[href*='performanceId'])", title);
+            }
+
+            for perf in performances {
                 let href = match perf.value().attr("href") {
                     Some(h) => h,
                     None => continue,
@@ -275,14 +345,22 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
                 seen_urls.insert(full_url.clone());
 
                 // Get time from data-time attribute (format: "'17:15'")
-                let time = perf
-                    .value()
-                    .attr("data-time")
-                    .and_then(|t| parse_time_attr(t));
+                let time_attr = perf.value().attr("data-time");
+                let time = time_attr.and_then(|t| parse_time_attr(t));
 
                 let time = match time {
                     Some(t) => t,
-                    None => continue,
+                    None => {
+                        if debug {
+                            time_parse_failures += 1;
+                            eprintln!(
+                                "[DEBUG] Failed to parse time '{}' for movie '{}'",
+                                time_attr.unwrap_or("(missing)"),
+                                title
+                            );
+                        }
+                        continue;
+                    }
                 };
 
                 // Get showtime date (from row or today)
@@ -332,7 +410,28 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
 
         if !screenings.is_empty() {
             movies.push(MovieWithScreenings { movie, screenings });
+        } else {
+            titles_without_screenings += 1;
+            if debug {
+                eprintln!(
+                    "[DEBUG] Movie '{}' has no valid screenings, skipping",
+                    title
+                );
+            }
         }
+    }
+
+    // Debug summary
+    if debug {
+        eprintln!("[DEBUG] --- Parsing Summary ---");
+        eprintln!("[DEBUG] Movies with screenings: {}", movies.len());
+        eprintln!(
+            "[DEBUG] Movies skipped (no screenings): {}",
+            titles_without_screenings
+        );
+        eprintln!("[DEBUG] Date parse failures: {}", date_parse_failures);
+        eprintln!("[DEBUG] Time parse failures: {}", time_parse_failures);
+        eprintln!("[DEBUG] --------------------------");
     }
 
     Ok(movies)
