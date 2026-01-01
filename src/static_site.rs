@@ -384,6 +384,17 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
             <div class="search-box">
                 <input type="search" id="search" placeholder="Search movies, directors, writers..." autocomplete="off">
             </div>
+            <fieldset class="date-filter">
+                <legend>Filter by date</legend>
+                <label>
+                    <input type="checkbox" id="filter-today" name="date-filter" value="today">
+                    Today
+                </label>
+                <label>
+                    <input type="checkbox" id="filter-tomorrow" name="date-filter" value="tomorrow">
+                    Tomorrow
+                </label>
+            </fieldset>
             <label class="show-all-toggle">
                 <input type="checkbox" id="show-all-ov">
                 Show all OV films (including non-English)
@@ -459,6 +470,21 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         )
         .to_lowercase();
 
+        // Collect unique screening dates for date filtering (YYYY-MM-DD format)
+        let screening_dates: Vec<String> = movie
+            .screenings
+            .iter()
+            .map(|s| {
+                s.showtime
+                    .with_timezone(&Berlin)
+                    .format("%Y-%m-%d")
+                    .to_string()
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let screening_dates_str = screening_dates.join(",");
+
         // Determine if we should show the original title (when different from display)
         let original_title_display = movie.original_title.as_ref().and_then(|orig| {
             if orig != display_title {
@@ -469,7 +495,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         });
 
         html.push_str(&format!(
-            r#"        <article class="movie-card" data-movie-id="{}" data-theaters="{}" data-english="{}" data-search="{}">
+            r#"        <article class="movie-card" data-movie-id="{}" data-theaters="{}" data-english="{}" data-search="{}" data-dates="{}">
             <figure class="movie-poster">
                 {}
             </figure>
@@ -480,6 +506,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
             theater_ids_str,
             is_english,
             escape_html(&search_text),
+            screening_dates_str,
             poster_html,
             escape_html(display_title),
             year_str,
@@ -697,10 +724,11 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
             let date_display = local_time.format("%A, %B %d").to_string();
 
             html.push_str(&format!(
-                r#"                <div class="screening-day">
+                r#"                <div class="screening-day" data-date="{}">
                     <h4>{}</h4>
                     <ul class="screening-times">
 "#,
+                date, // YYYY-MM-DD format for JS filtering
                 date_display
             ));
 
@@ -940,6 +968,49 @@ body {
 
 .search-box input::placeholder {
     color: var(--text-muted);
+}
+
+.date-filter {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: var(--bg-card);
+    border-radius: 0.5rem;
+    border: 1px solid var(--border);
+}
+
+.date-filter legend {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.date-filter label {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    cursor: pointer;
+    font-size: 0.875rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    transition: background 0.15s;
+}
+
+.date-filter label:hover {
+    background: var(--bg-hover);
+}
+
+.date-filter input[type="checkbox"] {
+    accent-color: var(--accent);
+    width: 1rem;
+    height: 1rem;
 }
 
 .show-all-toggle {
@@ -1237,6 +1308,10 @@ body {
     margin-bottom: 0;
 }
 
+.screening-day.hidden {
+    display: none;
+}
+
 .screening-day h4 {
     font-size: 0.875rem;
     font-weight: 500;
@@ -1414,12 +1489,30 @@ fn generate_js() -> &'static str {
 document.addEventListener('DOMContentLoaded', () => {
     const movieCards = document.querySelectorAll('.movie-card');
     const theaterCheckboxes = document.querySelectorAll('input[name="theater"]');
+    const dateFilterCheckboxes = document.querySelectorAll('input[name="date-filter"]');
+    const filterTodayCheckbox = document.getElementById('filter-today');
+    const filterTomorrowCheckbox = document.getElementById('filter-tomorrow');
     const selectAllBtn = document.getElementById('select-all');
     const selectNoneBtn = document.getElementById('select-none');
     const showAllOvCheckbox = document.getElementById('show-all-ov');
     const searchInput = document.getElementById('search');
 
     const STORAGE_KEY = 'filmFinderPrefs';
+
+    // Get date strings in YYYY-MM-DD format for Berlin timezone
+    function getDateStrings() {
+        const now = new Date();
+        // Format for Berlin timezone
+        const formatter = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Europe/Berlin',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+        const today = formatter.format(now);
+        const tomorrow = formatter.format(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+        return { today, tomorrow };
+    }
 
     // Check if localStorage is available (Safari private mode throws on access)
     function storageAvailable() {
@@ -1515,7 +1608,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Filter functionality (theaters + English/all OV + search)
+    // Filter functionality (theaters + English/all OV + search + date)
     function updateMoviesVisibility() {
         const selectedTheaters = new Set(
             Array.from(theaterCheckboxes)
@@ -1524,6 +1617,15 @@ document.addEventListener('DOMContentLoaded', () => {
         );
         const showAllOv = showAllOvCheckbox?.checked || false;
         const searchQuery = (searchInput?.value || '').toLowerCase().trim();
+
+        // Date filtering
+        const filterToday = filterTodayCheckbox?.checked || false;
+        const filterTomorrow = filterTomorrowCheckbox?.checked || false;
+        const dateFilterActive = filterToday || filterTomorrow;
+        const { today, tomorrow } = getDateStrings();
+        const allowedDates = new Set();
+        if (filterToday) allowedDates.add(today);
+        if (filterTomorrow) allowedDates.add(tomorrow);
 
         movieCards.forEach(card => {
             const movieTheaters = card.dataset.theaters.split(',');
@@ -1537,8 +1639,12 @@ document.addEventListener('DOMContentLoaded', () => {
             // Default is English only; if "Show all OV" is checked, show all
             const matchesLanguage = showAllOv || isEnglish;
 
-            // Hide if no selected theater OR doesn't match language filter OR doesn't match search
-            const shouldHide = !hasSelectedTheater || !matchesLanguage || !matchesSearch;
+            // Check date filter - if active, movie must have screenings on selected dates
+            const movieDates = (card.dataset.dates || '').split(',').filter(d => d);
+            const matchesDate = !dateFilterActive || movieDates.some(d => allowedDates.has(d));
+
+            // Hide if no selected theater OR doesn't match language filter OR doesn't match search OR doesn't match date
+            const shouldHide = !hasSelectedTheater || !matchesLanguage || !matchesSearch || !matchesDate;
             card.classList.toggle('hidden', shouldHide);
         });
 
@@ -1552,9 +1658,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 .map(cb => cb.value)
         );
 
+        // Date filtering for screening days
+        const filterToday = filterTodayCheckbox?.checked || false;
+        const filterTomorrow = filterTomorrowCheckbox?.checked || false;
+        const dateFilterActive = filterToday || filterTomorrow;
+        const { today, tomorrow } = getDateStrings();
+        const allowedDates = new Set();
+        if (filterToday) allowedDates.add(today);
+        if (filterTomorrow) allowedDates.add(tomorrow);
+
+        // Filter individual screenings by theater
         document.querySelectorAll('.screening').forEach(screening => {
             const theaterId = screening.dataset.theater;
             screening.classList.toggle('hidden', !selectedTheaters.has(theaterId));
+        });
+
+        // Filter screening days by date
+        document.querySelectorAll('.screening-day').forEach(day => {
+            const dayDate = day.dataset.date;
+            const matchesDate = !dateFilterActive || allowedDates.has(dayDate);
+            day.classList.toggle('hidden', !matchesDate);
         });
     }
 
@@ -1568,6 +1691,11 @@ document.addEventListener('DOMContentLoaded', () => {
     showAllOvCheckbox?.addEventListener('change', () => {
         updateMoviesVisibility();
         savePreferences();
+    });
+
+    // Date filter checkboxes
+    dateFilterCheckboxes.forEach(cb => {
+        cb.addEventListener('change', updateMoviesVisibility);
     });
 
     searchInput?.addEventListener('input', updateMoviesVisibility);
