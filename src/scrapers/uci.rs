@@ -529,6 +529,7 @@ fn detect_screening_type(class_attr: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, Timelike};
 
     #[test]
     fn test_theater_name_to_slug() {

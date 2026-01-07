@@ -6,7 +6,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use chrono_tz::Europe::Berlin;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -41,8 +41,8 @@ struct MovieData {
 /// Screening data for the static site.
 #[derive(Debug)]
 struct ScreeningData {
-    theater_id: i64,
     theater_name: String,
+    normalized_theater_name: String,
     theater_url: Option<String>,
     showtime: DateTime<Utc>,
     is_ov: bool,
@@ -53,14 +53,19 @@ struct ScreeningData {
     booking_url: Option<String>,
 }
 
-/// Theater data for filtering.
-#[derive(Debug)]
-#[allow(dead_code)]
+/// Theater data for filtering (deduplicated).
+#[derive(Debug, Clone)]
 struct TheaterInfo {
-    id: i64,
-    name: String,
+    /// Normalized name used as the unique key
+    normalized_name: String,
+    /// Display name (best version from sources)
+    display_name: String,
+    /// URL to theater website
     url: Option<String>,
-    source: String,
+    /// Theater chain or group
+    chain: String,
+    /// All database IDs that map to this theater
+    db_ids: Vec<i64>,
 }
 
 /// Generates the static website.
@@ -98,26 +103,237 @@ pub fn generate_static_site(db: &Database, output_dir: &str) -> Result<()> {
     Ok(())
 }
 
+/// Normalizes a theater name for deduplication.
+/// Removes common variations, extra whitespace, and standardizes formatting.
+fn normalize_theater_name(name: &str) -> String {
+    let mut normalized = name.to_lowercase();
+
+    // Remove common prefixes/suffixes that vary between sources
+    let removals = [
+        "kino in der ",
+        "kino im ",
+        "kino ",
+        " kino",
+        " berlin",
+        ", berlin",
+        " - berlin",
+        "berlin - ",
+        " - ",
+    ];
+    for removal in removals {
+        normalized = normalized.replace(removal, " ");
+    }
+
+    // Standardize German umlauts first
+    let umlaut_replacements = [
+        ("höfe", "hoefe"),
+        ("ü", "ue"),
+        ("ö", "oe"),
+        ("ä", "ae"),
+        ("ß", "ss"),
+        ("é", "e"),
+    ];
+    for (from, to) in umlaut_replacements {
+        normalized = normalized.replace(from, to);
+    }
+
+    // Standardize known variations
+    let replacements = [
+        ("cinestar ", "cinestar "),
+        ("uci kinowelt ", "uci "),
+        ("uci welt ", "uci "),
+        ("uci ", "uci "),
+        (" | luxe", ""),
+        ("| luxe", ""),
+        ("|luxe", ""),
+        // Kulturbrauerei variations
+        ("kulturbrauerei", "kulturbrauerei"),
+        // CUBIX variations
+        ("cubix am alexanderplatz", "cubix alexanderplatz"),
+        ("cubix alexanderplatz", "cubix alexanderplatz"),
+        // Passage variations
+        ("passage kinos", "passage"),
+        ("passage s", "passage"),
+        ("passages", "passage"),
+        // Wolf variations
+        ("wolf kino", "wolf"),
+        // Intimes
+        ("kino intimes", "intimes"),
+        // IL KINO
+        ("il kino", "il kino"),
+        // East Side Gallery
+        ("east side gallery", "east side gallery"),
+        ("mercedes platz", "east side gallery"),
+        ("mercedes-platz", "east side gallery"),
+        // Eastgate
+        ("am eastgate", "eastgate"),
+        // Gropius
+        ("gropius passagen", "gropius"),
+        // Remove "am" in middle of names
+        (" am ", " "),
+    ];
+    for (from, to) in replacements {
+        normalized = normalized.replace(from, to);
+    }
+
+    // Remove extra whitespace and trim
+    let normalized = normalized
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+
+    // Handle remaining edge cases with specific mappings
+    match normalized.as_str() {
+        s if s.contains("kulturbrauerei") && !s.contains("cinestar") => {
+            "cinestar kulturbrauerei".to_string()
+        }
+        s if s == "delphi filmpalast zoo" || s == "delphi filmpalast am zoo" => {
+            "delphi filmpalast".to_string()
+        }
+        "il" => "il kino".to_string(),
+        "yorck s" | "yorck kinos" | "new yorck" => "yorck".to_string(),
+        _ => normalized,
+    }
+}
+
+/// Determines the chain/group for a theater based on its name.
+fn get_theater_chain(name: &str) -> &'static str {
+    let name_lower = name.to_lowercase();
+
+    if name_lower.contains("uci") {
+        "UCI"
+    } else if name_lower.contains("cinestar") {
+        "CineStar"
+    } else if name_lower.contains("cinemaxx") {
+        "CinemaxX"
+    } else if name_lower.contains("cineplex") {
+        "Cineplex"
+    } else if name_lower.contains("cinemotion") {
+        "CineMotion"
+    } else if is_yorck_theater(&name_lower) {
+        "Yorck Kinos"
+    } else {
+        "Independent Cinemas"
+    }
+}
+
+/// Checks if a theater is part of the Yorck group.
+fn is_yorck_theater(name_lower: &str) -> bool {
+    let yorck_theaters = [
+        "babylon",
+        "capitol",
+        "cinema paris",
+        "delphi filmpalast",
+        "delphi lux",
+        "filmtheater am friedrichshain",
+        "international",
+        "kant",
+        "kino",
+        "neues off",
+        "odeon",
+        "passage",
+        "rollberg",
+        "yorck",
+        "new yorck",
+    ];
+
+    // Exact matches or contains check
+    for yorck in yorck_theaters {
+        if name_lower.contains(yorck)
+            && !name_lower.contains("uci")
+            && !name_lower.contains("cinestar")
+        {
+            // Special case: "Babylon Kreuzberg" is Yorck, but need to be careful
+            if yorck == "babylon" && name_lower.contains("babylon") {
+                return true;
+            }
+            if yorck != "babylon" && name_lower.contains(yorck) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn fetch_theaters(db: &Database) -> Result<Vec<TheaterInfo>> {
     let conn = db.connection();
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.name, t.url, s.name as source
+        "SELECT t.id, t.name, t.url
          FROM theaters t
-         JOIN sources s ON t.source_id = s.id
-         ORDER BY s.name, t.name",
+         ORDER BY t.name",
     )?;
 
+    // Collect all theaters from DB
+    struct RawTheater {
+        id: i64,
+        name: String,
+        url: Option<String>,
+    }
+
     let rows = stmt.query_map([], |row| {
-        Ok(TheaterInfo {
+        Ok(RawTheater {
             id: row.get(0)?,
             name: row.get(1)?,
             url: row.get(2)?,
-            source: row.get(3)?,
         })
     })?;
 
-    let results: Result<Vec<_>, _> = rows.collect();
-    Ok(results?)
+    let raw_theaters: Vec<RawTheater> = rows.collect::<Result<Vec<_>, _>>()?;
+
+    // Deduplicate by normalized name
+    let mut theater_map: HashMap<String, TheaterInfo> = HashMap::new();
+
+    for raw in raw_theaters {
+        let normalized = normalize_theater_name(&raw.name);
+        let chain = get_theater_chain(&raw.name);
+
+        theater_map
+            .entry(normalized.clone())
+            .and_modify(|existing| {
+                existing.db_ids.push(raw.id);
+                // Prefer URLs from the theater's own source (longer URLs tend to be more specific)
+                if existing.url.is_none() && raw.url.is_some() {
+                    existing.url = raw.url.clone();
+                }
+                // Prefer display names that are longer/more complete
+                if raw.name.len() > existing.display_name.len() {
+                    existing.display_name = raw.name.clone();
+                }
+            })
+            .or_insert(TheaterInfo {
+                normalized_name: normalized,
+                display_name: raw.name,
+                url: raw.url,
+                chain: chain.to_string(),
+                db_ids: vec![raw.id],
+            });
+    }
+
+    // Convert to vec and sort by chain, then name
+    let mut theaters: Vec<TheaterInfo> = theater_map.into_values().collect();
+    theaters.sort_by(|a, b| {
+        // Sort chains in a specific order
+        let chain_order = |c: &str| -> u8 {
+            match c {
+                "Yorck Kinos" => 0,
+                "CineStar" => 1,
+                "UCI" => 2,
+                "CinemaxX" => 3,
+                "Cineplex" => 4,
+                "CineMotion" => 5,
+                "Independent Cinemas" => 6,
+                _ => 7,
+            }
+        };
+        chain_order(&a.chain)
+            .cmp(&chain_order(&b.chain))
+            .then(a.display_name.cmp(&b.display_name))
+    });
+
+    Ok(theaters)
 }
 
 fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
@@ -211,7 +427,7 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
         let screenings: Vec<ScreeningData> = if group_key > 0 {
             // Has TMDB ID - get screenings from all movies with this TMDB ID
             let mut stmt = conn.prepare(
-                "SELECT t.id, t.name, t.url, s.showtime, s.is_ov, s.is_omu, s.is_english_subs, s.is_3d,
+                "SELECT t.name, t.url, s.showtime, s.is_ov, s.is_omu, s.is_english_subs, s.is_3d,
                         s.screening_type, s.booking_url
                  FROM screenings s
                  JOIN theaters t ON s.theater_id = t.id
@@ -222,29 +438,30 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
                  ORDER BY s.showtime",
             )?;
             let rows = stmt.query_map([&group_key.to_string(), &now.to_rfc3339()], |row| {
-                let showtime_str: String = row.get(3)?;
+                let showtime_str: String = row.get(2)?;
                 let showtime = DateTime::parse_from_rfc3339(&showtime_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or(now);
 
+                let theater_name: String = row.get(0)?;
                 Ok(ScreeningData {
-                    theater_id: row.get(0)?,
-                    theater_name: row.get(1)?,
-                    theater_url: row.get(2)?,
+                    normalized_theater_name: normalize_theater_name(&theater_name),
+                    theater_name,
+                    theater_url: row.get(1)?,
                     showtime,
-                    is_ov: row.get::<_, i32>(4)? != 0,
-                    is_omu: row.get::<_, i32>(5)? != 0,
-                    is_english_subs: row.get::<_, i32>(6)? != 0,
-                    is_3d: row.get::<_, i32>(7)? != 0,
-                    screening_type: row.get(8)?,
-                    booking_url: row.get(9)?,
+                    is_ov: row.get::<_, i32>(3)? != 0,
+                    is_omu: row.get::<_, i32>(4)? != 0,
+                    is_english_subs: row.get::<_, i32>(5)? != 0,
+                    is_3d: row.get::<_, i32>(6)? != 0,
+                    screening_type: row.get(7)?,
+                    booking_url: row.get(8)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
         } else {
             // No TMDB ID - just get screenings for this specific movie
             let mut stmt = conn.prepare(
-                "SELECT t.id, t.name, t.url, s.showtime, s.is_ov, s.is_omu, s.is_english_subs, s.is_3d,
+                "SELECT t.name, t.url, s.showtime, s.is_ov, s.is_omu, s.is_english_subs, s.is_3d,
                         s.screening_type, s.booking_url
                  FROM screenings s
                  JOIN theaters t ON s.theater_id = t.id
@@ -254,22 +471,23 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
                  ORDER BY s.showtime",
             )?;
             let rows = stmt.query_map([&id.to_string(), &now.to_rfc3339()], |row| {
-                let showtime_str: String = row.get(3)?;
+                let showtime_str: String = row.get(2)?;
                 let showtime = DateTime::parse_from_rfc3339(&showtime_str)
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or(now);
 
+                let theater_name: String = row.get(0)?;
                 Ok(ScreeningData {
-                    theater_id: row.get(0)?,
-                    theater_name: row.get(1)?,
-                    theater_url: row.get(2)?,
+                    normalized_theater_name: normalize_theater_name(&theater_name),
+                    theater_name,
+                    theater_url: row.get(1)?,
                     showtime,
-                    is_ov: row.get::<_, i32>(4)? != 0,
-                    is_omu: row.get::<_, i32>(5)? != 0,
-                    is_english_subs: row.get::<_, i32>(6)? != 0,
-                    is_3d: row.get::<_, i32>(7)? != 0,
-                    screening_type: row.get(8)?,
-                    booking_url: row.get(9)?,
+                    is_ov: row.get::<_, i32>(3)? != 0,
+                    is_omu: row.get::<_, i32>(4)? != 0,
+                    is_english_subs: row.get::<_, i32>(5)? != 0,
+                    is_3d: row.get::<_, i32>(6)? != 0,
+                    screening_type: row.get(7)?,
+                    booking_url: row.get(8)?,
                 })
             })?;
             rows.collect::<Result<Vec<_>, _>>()?
@@ -336,44 +554,57 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         cache_version
     ));
 
-    // Group theaters by source
-    let mut theaters_by_source: HashMap<String, Vec<&TheaterInfo>> = HashMap::new();
+    // Group theaters by chain
+    let mut theaters_by_chain: HashMap<String, Vec<&TheaterInfo>> = HashMap::new();
     for theater in theaters {
-        theaters_by_source
-            .entry(theater.source.clone())
+        theaters_by_chain
+            .entry(theater.chain.clone())
             .or_default()
             .push(theater);
     }
 
-    for (source, source_theaters) in &theaters_by_source {
-        html.push_str(&format!(
-            r#"                    <li class="theater-group">
+    // Sort chains in preferred order
+    let chain_order = [
+        "Yorck Kinos",
+        "CineStar",
+        "UCI",
+        "CinemaxX",
+        "Cineplex",
+        "CineMotion",
+        "Independent Cinemas",
+    ];
+    for chain in chain_order {
+        if let Some(chain_theaters) = theaters_by_chain.get(chain) {
+            html.push_str(&format!(
+                r#"                    <li class="theater-group">
                         <strong>{}</strong>
                         <ul>
 "#,
-            escape_html(source)
-        ));
+                escape_html(chain)
+            ));
 
-        for theater in source_theaters {
-            html.push_str(&format!(
-                r#"                            <li>
+            for theater in chain_theaters {
+                // Use normalized name as the value for filtering (matches screening data-theater)
+                html.push_str(&format!(
+                    r#"                            <li>
                                 <label>
                                     <input type="checkbox" name="theater" value="{}" data-name="{}" checked>
                                     {}
                                 </label>
                             </li>
 "#,
-                theater.id,
-                escape_html(&theater.name),
-                escape_html(&theater.name)
-            ));
-        }
+                    escape_html(&theater.normalized_name),
+                    escape_html(&theater.display_name),
+                    escape_html(&theater.display_name)
+                ));
+            }
 
-        html.push_str(
-            r#"                        </ul>
+            html.push_str(
+                r#"                        </ul>
                     </li>
 "#,
-        );
+            );
+        }
     }
 
     html.push_str(
@@ -441,15 +672,15 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
             }
         };
 
-        // Collect theater IDs for this movie
-        let theater_ids: Vec<String> = movie
+        // Collect normalized theater names for this movie (for filtering)
+        let theater_names: Vec<String> = movie
             .screenings
             .iter()
-            .map(|s| s.theater_id.to_string())
-            .collect::<std::collections::HashSet<_>>()
+            .map(|s| s.normalized_theater_name.clone())
+            .collect::<HashSet<_>>()
             .into_iter()
             .collect();
-        let theater_ids_str = theater_ids.join(",");
+        let theater_names_str = theater_names.join(",");
 
         // Check if movie is English (original language is "en" or has English subtitles)
         let is_english_language = movie
@@ -503,7 +734,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
                 <h2 class="movie-title-row">{}{}{}</h2>
 "#,
             movie.id,
-            theater_ids_str,
+            escape_html(&theater_names_str),
             is_english,
             escape_html(&search_text),
             screening_dates_str,
@@ -780,7 +1011,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
                             <span class="screening-tags">{}</span>{}
                         </li>
 "#,
-                    screening.theater_id,
+                    escape_html(&screening.normalized_theater_name),
                     screening.showtime.to_rfc3339(),
                     time_str,
                     theater_html,
@@ -811,11 +1042,20 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         r#"    </main>
 
     <footer class="site-footer">
-        <p>Data from UCI Kinowelt, CineStar, and Yorck cinemas. Movie info from TMDB.</p>
+        <p>Developed by Chris Bruce</p>
         <p class="last-updated">Last updated: {}</p>
     </footer>
 
     <script src="app.js?v={}"></script>
+    <script src='https://storage.ko-fi.com/cdn/scripts/overlay-widget.js'></script>
+    <script>
+      kofiWidgetOverlay.draw('chrisabruce', {{
+        'type': 'floating-chat',
+        'floating-chat.donateButton.text': 'Support Me',
+        'floating-chat.donateButton.background-color': '#ff38b8',
+        'floating-chat.donateButton.text-color': '#fff'
+      }});
+    </script>
 </body>
 </html>
 "#,

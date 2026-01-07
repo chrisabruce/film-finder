@@ -24,7 +24,7 @@ use chrono_tz::Europe::Berlin;
 
 use crate::db::Database;
 use crate::scraper::Scraper;
-use crate::scrapers::{CineStarScraper, UciScraper, YorckScraper};
+use crate::scrapers::{CineStarScraper, CriticScraper, UciScraper, YorckScraper};
 use crate::static_site::generate_static_site;
 use crate::tmdb::{load_api_key, TmdbClient};
 
@@ -120,6 +120,7 @@ async fn cmd_scrape() -> Result<()> {
         Box::new(UciScraper::new()),
         Box::new(CineStarScraper::new()),
         Box::new(YorckScraper::new()),
+        Box::new(CriticScraper::new()),
     ];
 
     for scraper in &scrapers {
