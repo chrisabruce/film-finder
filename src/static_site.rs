@@ -1042,7 +1042,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         r#"    </main>
 
     <footer class="site-footer">
-        <p>Developed by Chris Bruce</p>
+        <p>Developed by <a href="https://secedastudios.com" target="_blank" rel="noopener">Chris Bruce</a></p>
         <p class="last-updated">Last updated: {}</p>
     </footer>
 
@@ -1644,6 +1644,15 @@ body {
     margin-top: 0.5rem;
     font-size: 0.75rem;
     opacity: 0.7;
+}
+
+.site-footer a,
+.site-footer a:visited {
+    color: #6b7280;
+}
+
+.site-footer a:hover {
+    color: #9ca3af;
 }
 
 /* Mobile adjustments */
