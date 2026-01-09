@@ -914,8 +914,8 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         // Overview
         if let Some(ref overview) = movie.overview {
             if !overview.is_empty() {
-                let truncated = if overview.len() > 200 {
-                    format!("{}...", &overview[..200])
+                let truncated = if overview.chars().count() > 200 {
+                    format!("{}...", overview.chars().take(200).collect::<String>())
                 } else {
                     overview.clone()
                 };

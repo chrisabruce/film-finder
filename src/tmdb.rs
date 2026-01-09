@@ -26,6 +26,7 @@ struct MovieSearchResult {
     release_date: Option<String>,
     overview: Option<String>,
     poster_path: Option<String>,
+    #[serde(default)]
     genre_ids: Vec<i32>,
 }
 
@@ -123,7 +124,16 @@ impl TmdbClient {
             urlencoding::encode(title)
         );
 
-        let resp: SearchResponse = self.client.get(&url).send().await?.json().await?;
+        let response = self.client.get(&url).send().await?;
+        let text = response.text().await?;
+        let resp: SearchResponse = serde_json::from_str(&text).map_err(|e| {
+            anyhow!(
+                "Failed to parse TMDB search response for '{}': {} - Response: {}",
+                title,
+                e,
+                &text[..text.len().min(500)]
+            )
+        })?;
         Ok(resp.results.into_iter().next())
     }
 
