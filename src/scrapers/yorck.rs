@@ -4,7 +4,8 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
+use chrono_tz::Europe::Berlin;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -156,8 +157,31 @@ fn extract_next_data(html: &str) -> Result<String> {
 }
 
 fn parse_session(session: &Session) -> Result<Screening> {
-    let showtime: DateTime<Utc> = DateTime::parse_from_rfc3339(&session.fields.start_time)
-        .map(|dt| dt.with_timezone(&Utc))?;
+    // The Yorck API consistently sends times with +01:00 (CET) offset even during
+    // CEST (summer time, +02:00). Trusting the offset would store times 1 hour
+    // early in UTC, causing them to display 1 hour late in Berlin.
+    // Fix: strip the offset and re-interpret the wall-clock time as Berlin local time
+    // so chrono_tz correctly applies CET in winter and CEST in summer.
+    let naive = DateTime::parse_from_rfc3339(&session.fields.start_time)
+        .map_err(|e| {
+            anyhow!(
+                "Failed to parse showtime '{}': {}",
+                &session.fields.start_time,
+                e
+            )
+        })?
+        .naive_local();
+
+    let showtime: DateTime<Utc> = Berlin
+        .from_local_datetime(&naive)
+        .single()
+        .ok_or_else(|| {
+            anyhow!(
+                "Ambiguous or non-existent local time: {}",
+                &session.fields.start_time
+            )
+        })?
+        .with_timezone(&Utc);
 
     let formats = &session.fields.formats;
 
