@@ -221,52 +221,29 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
     let mut seen_urls: HashSet<String> = HashSet::new();
     let debug = debug_enabled();
 
-    // Debug: log HTML size
     if debug {
         eprintln!("[DEBUG] HTML size: {} bytes", html.len());
     }
 
-    // Film containers have class "film show"
-    let film_selector = Selector::parse("div.film.show").unwrap();
+    // Film containers: <div data-film-container data-film-id="...">
+    let film_selector = Selector::parse("div[data-film-container]").unwrap();
 
-    // Title selector - the main h2 with the title
+    // Title: <h2 class="film-container__description__text__eventtitle"> <a>Title</a> </h2>
     let title_selector =
-        Selector::parse("h2.eventkalender--item--description--text--eventtitle a").unwrap();
+        Selector::parse("h2.film-container__description__text__eventtitle a").unwrap();
 
     // Film info for runtime/rating
     let info_selector = Selector::parse("ul.film-info.infolist").unwrap();
 
-    // Film ID from the eventkalender item
-    let item_selector = Selector::parse("div.eventkalender--item").unwrap();
+    // Performance/showtime links: <a class="badge-performance" data-time="16:30" data-date="20260403" href="...">
+    let performance_selector = Selector::parse("a.badge-performance").unwrap();
 
-    // Performance/showtime links
-    let performance_selector = Selector::parse("a.performance[href*='performanceId']").unwrap();
-
-    // Schedule rows for date context
-    let row_selector = Selector::parse("tr.schedule-container-date").unwrap();
-
-    // Debug: count film elements
     let film_elements: Vec<_> = document.select(&film_selector).collect();
     if debug {
         eprintln!(
-            "[DEBUG] Found {} elements matching 'div.film.show'",
+            "[DEBUG] Found {} elements matching 'div[data-film-container]'",
             film_elements.len()
         );
-        if film_elements.is_empty() {
-            // Try to find what elements exist to help diagnose
-            let div_count = document.select(&Selector::parse("div").unwrap()).count();
-            let film_class_count = document
-                .select(&Selector::parse("div.film").unwrap())
-                .count();
-            eprintln!("[DEBUG] Total div elements: {}", div_count);
-            eprintln!("[DEBUG] Elements with 'div.film': {}", film_class_count);
-            // Sample first 500 chars of body for inspection
-            if let Some(body) = document.select(&Selector::parse("body").unwrap()).next() {
-                let body_text = body.html();
-                let sample: String = body_text.chars().take(1000).collect();
-                eprintln!("[DEBUG] HTML body sample (first 1000 chars):\n{}", sample);
-            }
-        }
     }
 
     let mut titles_without_screenings = 0;
@@ -279,24 +256,20 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
             Some(el) => el.text().collect::<String>().trim().to_string(),
             None => {
                 if debug {
-                    eprintln!("[DEBUG] Film element missing title (selector: h2.eventkalender--item--description--text--eventtitle a)");
+                    eprintln!("[DEBUG] Film element missing title");
                 }
                 continue;
             }
         };
 
         if title.is_empty() {
-            if debug {
-                eprintln!("[DEBUG] Film element has empty title");
-            }
             continue;
         }
 
-        // Get film ID
+        // Get film ID from data-film-id attribute
         let external_id = film_elem
-            .select(&item_selector)
-            .next()
-            .and_then(|el| el.value().attr("film-id"))
+            .value()
+            .attr("data-film-id")
             .map(|s| s.to_string());
 
         // Get runtime and rating from info list
@@ -311,7 +284,7 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
 
         // Check if the film section's legend mentions OV
         let film_html = film_elem.html();
-        let film_section_has_ov = film_html.contains("OV: Filmvorstellung in Originalsprache");
+        let film_section_has_ov = film_html.contains("data-attribute-id=\"ov\"");
 
         let movie = Movie {
             external_id,
@@ -322,18 +295,48 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
 
         let mut screenings = Vec::new();
 
-        // Parse all schedule rows
-        let schedule_rows: Vec<_> = film_elem.select(&row_selector).collect();
-        if debug && schedule_rows.is_empty() {
+        // Parse all performance badges directly (they carry data-date and data-time)
+        let performances: Vec<_> = film_elem.select(&performance_selector).collect();
+        if debug && performances.is_empty() {
             eprintln!(
-                "[DEBUG] Movie '{}' has no schedule rows (tr.schedule-container-date)",
+                "[DEBUG] Movie '{}' has no performance badges",
                 title
             );
         }
 
-        for row in schedule_rows {
-            // Get date from row's data-date attribute (format: "20251227")
-            let date_attr = row.value().attr("data-date");
+        for perf in performances {
+            let href = match perf.value().attr("href") {
+                Some(h) => h,
+                None => continue,
+            };
+
+            let full_url = format!("https://www.uci-kinowelt.de{}", href);
+            if seen_urls.contains(&full_url) {
+                continue;
+            }
+            seen_urls.insert(full_url.clone());
+
+            // Get time from data-time attribute (format: "16:30")
+            let time_attr = perf.value().attr("data-time");
+            let time = time_attr.and_then(|t| parse_time_attr(t));
+
+            let time = match time {
+                Some(t) => t,
+                None => {
+                    if debug {
+                        time_parse_failures += 1;
+                        eprintln!(
+                            "[DEBUG] Failed to parse time '{}' for movie '{}'",
+                            time_attr.unwrap_or("(missing)"),
+                            title
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            // Get date from data-date attribute (format: "20260403")
+            let date_attr = perf.value().attr("data-date");
             let date = date_attr.and_then(|d| parse_date_compact(d));
 
             if debug && date_attr.is_some() && date.is_none() {
@@ -345,87 +348,35 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
                 );
             }
 
-            // Get all performances in this row
-            let performances: Vec<_> = row.select(&performance_selector).collect();
-            if debug && performances.is_empty() {
-                eprintln!("[DEBUG] Movie '{}' row has no performances (a.performance[href*='performanceId'])", title);
-            }
+            let showtime_date = date.unwrap_or_else(|| Utc::now().date_naive());
 
-            for perf in performances {
-                let href = match perf.value().attr("href") {
-                    Some(h) => h,
-                    None => continue,
-                };
+            let showtime = Berlin
+                .from_local_datetime(&showtime_date.and_time(time))
+                .single()
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
 
-                // Build full URL and check for duplicates
-                let full_url = format!("https://www.uci-kinowelt.de{}", href);
-                if seen_urls.contains(&full_url) {
-                    continue;
-                }
-                seen_urls.insert(full_url.clone());
+            // Check performance classes for attributes
+            let class_attr = perf.value().attr("class").unwrap_or("");
 
-                // Get time from data-time attribute (format: "'17:15'")
-                let time_attr = perf.value().attr("data-time");
-                let time = time_attr.and_then(|t| parse_time_attr(t));
+            let is_ov = class_attr.contains("attribute-ov");
+            let is_omu = class_attr.contains("attribute-omu")
+                && !class_attr.contains("attribute-omeu")
+                && !class_attr.contains("attribute-omengu");
+            let is_english_subs = class_attr.contains("attribute-omeu")
+                || class_attr.contains("attribute-omengu");
+            let is_3d = class_attr.contains("attribute-3d");
+            let screening_type = detect_screening_type(class_attr);
 
-                let time = match time {
-                    Some(t) => t,
-                    None => {
-                        if debug {
-                            time_parse_failures += 1;
-                            eprintln!(
-                                "[DEBUG] Failed to parse time '{}' for movie '{}'",
-                                time_attr.unwrap_or("(missing)"),
-                                title
-                            );
-                        }
-                        continue;
-                    }
-                };
-
-                // Get showtime date (from row or today)
-                let showtime_date = date.unwrap_or_else(|| Utc::now().date_naive());
-
-                // Combine into UTC datetime
-                let showtime = Berlin
-                    .from_local_datetime(&showtime_date.and_time(time))
-                    .single()
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(Utc::now);
-
-                // Check performance classes for attributes
-                let class_attr = perf.value().attr("class").unwrap_or("");
-
-                // OV detection: check if this specific performance has OV class
-                let is_ov = class_attr.contains("attribut-ov") || class_attr.contains(" ov ");
-
-                // OmU = German subtitles, OmeU/OmengU = English subtitles
-                let is_omu = class_attr.contains("attribut-omu")
-                    || (class_attr.contains(" omu ")
-                        && !class_attr.contains("omeu")
-                        && !class_attr.contains("omengu"));
-                let is_english_subs = class_attr.contains("attribut-omeu")
-                    || class_attr.contains(" omeu ")
-                    || class_attr.contains("attribut-omengu")
-                    || class_attr.contains(" omengu ");
-
-                // 3D detection
-                let is_3d = class_attr.contains("attribut-3d") || class_attr.contains(" 3d ");
-
-                // Screening type detection
-                let screening_type = detect_screening_type(class_attr);
-
-                screenings.push(Screening {
-                    showtime,
-                    screening_type,
-                    is_ov: is_ov
-                        || (film_section_has_ov && !screenings.iter().any(|s: &Screening| s.is_ov)),
-                    is_omu,
-                    is_english_subs,
-                    is_3d,
-                    booking_url: Some(full_url),
-                });
-            }
+            screenings.push(Screening {
+                showtime,
+                screening_type,
+                is_ov: is_ov || (film_section_has_ov && is_section_ov_default(&film_html)),
+                is_omu,
+                is_english_subs,
+                is_3d,
+                booking_url: Some(full_url),
+            });
         }
 
         if !screenings.is_empty() {
@@ -441,7 +392,6 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
         }
     }
 
-    // Debug summary
     if debug {
         eprintln!("[DEBUG] --- Parsing Summary ---");
         eprintln!("[DEBUG] Movies with screenings: {}", movies.len());
@@ -455,6 +405,15 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
     }
 
     Ok(movies)
+}
+
+/// Returns true if the film section legend lists OV but individual badges
+/// don't carry attribute-ov (i.e. all screenings in this section are OV).
+fn is_section_ov_default(film_html: &str) -> bool {
+    // If the legend declares OV but there are no individual attribute-ov badges,
+    // all performances in this section are OV.
+    film_html.contains("data-attribute-id=\"ov\"")
+        && !film_html.contains("attribute-ov")
 }
 
 /// Parses runtime and rating from info text.
@@ -506,16 +465,16 @@ fn parse_time_attr(text: &str) -> Option<NaiveTime> {
 fn detect_screening_type(class_attr: &str) -> Option<String> {
     let mut types = Vec::new();
 
-    if class_attr.contains("attribut-isense") || class_attr.contains(" isense ") {
+    if class_attr.contains("attribute-isense") {
         types.push("iSense");
     }
-    if class_attr.contains("attribut-imax") || class_attr.contains(" imax") {
+    if class_attr.contains("attribute-imax") {
         types.push("IMAX");
     }
-    if class_attr.contains("attribut-screenx") || class_attr.contains(" screenx ") {
+    if class_attr.contains("attribute-screenx") {
         types.push("ScreenX");
     }
-    if class_attr.contains("attribut-dolby") || class_attr.contains(" dolby ") {
+    if class_attr.contains("attribute-dolby") {
         types.push("Dolby");
     }
 

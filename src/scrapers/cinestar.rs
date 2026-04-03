@@ -14,7 +14,6 @@ use crate::scraper::Scraper;
 /// Berlin CineStar theater IDs and names.
 const BERLIN_THEATERS: &[(&str, &str)] = &[
     ("3", "CineStar Berlin - CUBIX am Alexanderplatz"),
-    ("4", "CineStar Berlin - Treptower Park"),
     ("5", "CineStar Berlin - Tegel"),
     ("6", "CineStar Berlin - Hellersdorf"),
     ("9", "Kino in der KulturBrauerei"),
@@ -188,7 +187,7 @@ struct CinemaInfo {
     slug: Option<String>,
     city: String,
     street: String,
-    zip: i32,
+    zip: String,
     lat: Option<f64>,
     lng: Option<f64>,
 }
