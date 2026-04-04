@@ -89,6 +89,8 @@ pub fn generate_static_site(db: &Database, output_dir: &str) -> Result<()> {
     fs::write(output_path.join("index.html"), html)?;
     fs::write(output_path.join("style.css"), generate_css())?;
     fs::write(output_path.join("app.js"), generate_js())?;
+    fs::write(output_path.join("sitemap.xml"), generate_sitemap(&movies))?;
+    fs::write(output_path.join("robots.txt"), generate_robots_txt())?;
 
     // Write Cloudflare Pages _headers file for cache control
     fs::write(output_path.join("_headers"), generate_headers())?;
@@ -520,8 +522,117 @@ fn fetch_ov_movies(db: &Database) -> Result<Vec<MovieData>> {
     Ok(movies)
 }
 
+/// Generates JSON-LD structured data for SEO.
+fn generate_json_ld(movies: &[MovieData]) -> String {
+    let mut items = String::new();
+    // Limit to 50 movies to keep JSON-LD size reasonable
+    let max_items = movies.len().min(50);
+
+    for (i, movie) in movies.iter().take(max_items).enumerate() {
+        let display_title = movie
+            .english_title
+            .as_ref()
+            .or(movie.original_title.as_ref())
+            .unwrap_or(&movie.title);
+
+        if i > 0 {
+            items.push(',');
+        }
+
+        items.push_str(&format!(
+            r#"
+        {{
+          "@type": "ListItem",
+          "position": {},
+          "item": {{
+            "@type": "Movie",
+            "name": "{}",
+            "url": "https://ovberlin.com/#movie-{}""#,
+            i + 1,
+            escape_json(display_title),
+            movie.id
+        ));
+
+        if let Some(ref director) = movie.director {
+            items.push_str(&format!(
+                r#",
+            "director": {{ "@type": "Person", "name": "{}" }}"#,
+                escape_json(director)
+            ));
+        }
+
+        if let Some(year) = movie.year {
+            items.push_str(&format!(
+                r#",
+            "dateCreated": "{}""#,
+                year
+            ));
+        }
+
+        if let Some(ref overview) = movie.overview {
+            if !overview.is_empty() {
+                let truncated: String = overview.chars().take(200).collect();
+                items.push_str(&format!(
+                    r#",
+            "description": "{}""#,
+                    escape_json(&truncated)
+                ));
+            }
+        }
+
+        if let Some(ref poster_url) = movie.poster_url {
+            items.push_str(&format!(
+                r#",
+            "image": "{}""#,
+                escape_json(poster_url)
+            ));
+        }
+
+        items.push_str(
+            r#"
+          }
+        }"#,
+        );
+    }
+
+    format!(
+        r#"<script type="application/ld+json">
+    {{
+      "@context": "https://schema.org",
+      "@graph": [
+        {{
+          "@type": "WebSite",
+          "name": "OV Berlin",
+          "url": "https://ovberlin.com/",
+          "description": "Find original version (OV) and subtitled (OmU) movie screenings in Berlin"
+        }},
+        {{
+          "@type": "ItemList",
+          "name": "OV Movies Showing in Berlin",
+          "numberOfItems": {},
+          "itemListElement": [{}
+          ]
+        }}
+      ]
+    }}
+    </script>"#,
+        movies.len(),
+        items
+    )
+}
+
 fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: i64) -> String {
     let mut html = String::new();
+
+    let movie_count = movies.len();
+    let theater_count = theaters.len();
+    let meta_description = format!(
+        "Find original version (OV) and subtitled (OmU) movie screenings in Berlin. {} films at {} cinemas, updated twice daily. Free, ad-free, and easy to use.",
+        movie_count, theater_count
+    );
+
+    // Build JSON-LD structured data
+    let json_ld = generate_json_ld(movies);
 
     // DOCTYPE and head (with cache-busting version on CSS)
     html.push_str(&format!(
@@ -530,18 +641,38 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Film Finder - OV Movies in Berlin</title>
+    <title>OV Berlin – Original Version Movies &amp; Showtimes</title>
+    <meta name="description" content="{}">
+    <link rel="canonical" href="https://ovberlin.com/">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ovberlin.com/">
+    <meta property="og:title" content="OV Berlin – Original Version Movies &amp; Showtimes">
+    <meta property="og:description" content="{}">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:site_name" content="OV Berlin">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="OV Berlin – Original Version Movies &amp; Showtimes">
+    <meta name="twitter:description" content="{}">
     <link rel="stylesheet" href="style.css?v={}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    {}
 </head>
 <body>
     <header class="site-header">
-        <h1>Film Finder</h1>
-        <p class="tagline">English-language screenings in Berlin</p>
-    </header>
+        <h1>OV Berlin</h1>
+        <p class="tagline">Original version movie screenings in Berlin</p>
+    </header>"#,
+        escape_html(&meta_description),
+        escape_html(&meta_description),
+        escape_html(&meta_description),
+        cache_version,
+        json_ld,
+    ));
 
+    html.push_str(
+        r#"
     <nav class="theater-filter">
         <details>
             <summary>Filter by Theater</summary>
@@ -551,8 +682,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
                 <button type="button" id="select-none">Clear All</button>
                 <ul class="theater-list">
 "#,
-        cache_version
-    ));
+    );
 
     // Group theaters by chain
     let mut theaters_by_chain: HashMap<String, Vec<&TheaterInfo>> = HashMap::new();
@@ -726,13 +856,14 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         });
 
         html.push_str(&format!(
-            r#"        <article class="movie-card" data-movie-id="{}" data-theaters="{}" data-english="{}" data-search="{}" data-dates="{}">
+            r#"        <article class="movie-card" id="movie-{}" data-movie-id="{}" data-theaters="{}" data-english="{}" data-search="{}" data-dates="{}">
             <figure class="movie-poster">
                 {}
             </figure>
             <header class="movie-header">
                 <h2 class="movie-title-row">{}{}{}</h2>
 "#,
+            movie.id,
             movie.id,
             escape_html(&theater_names_str),
             is_english,
@@ -1999,6 +2130,15 @@ fn generate_headers() -> &'static str {
 
 /*.js
   Cache-Control: public, max-age=31536000, immutable
+
+# Sitemap updates with each deploy
+/sitemap.xml
+  Cache-Control: public, max-age=3600, must-revalidate
+  Content-Type: application/xml
+
+# Robots is mostly static
+/robots.txt
+  Cache-Control: public, max-age=86400, must-revalidate
 "#
 }
 
@@ -2008,4 +2148,50 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn generate_sitemap(movies: &[MovieData]) -> String {
+    let now = Utc::now().format("%Y-%m-%d").to_string();
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+"#,
+    );
+    xml.push_str(&format!(
+        r#"  <url>
+    <loc>https://ovberlin.com/</loc>
+    <lastmod>{}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+"#,
+        now
+    ));
+    // Add individual movie fragment URLs so search engines know about anchored content
+    for movie in movies {
+        xml.push_str(&format!(
+            r#"  <url>
+    <loc>https://ovberlin.com/#movie-{}</loc>
+    <lastmod>{}</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>0.8</priority>
+  </url>
+"#,
+            movie.id, now
+        ));
+    }
+    xml.push_str("</urlset>\n");
+    xml
+}
+
+fn generate_robots_txt() -> &'static str {
+    "User-agent: *\nAllow: /\n\nSitemap: https://ovberlin.com/sitemap.xml\n"
 }
