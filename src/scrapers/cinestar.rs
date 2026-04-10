@@ -9,7 +9,7 @@ use chrono_tz::Europe::Berlin;
 use serde::Deserialize;
 
 use crate::models::{Movie, MovieWithScreenings, Screening, Theater, TheaterData};
-use crate::scraper::Scraper;
+use crate::scraper::{http_client_builder, Scraper};
 
 /// Berlin CineStar theater IDs and names.
 const BERLIN_THEATERS: &[(&str, &str)] = &[
@@ -29,7 +29,9 @@ pub struct CineStarScraper {
 impl CineStarScraper {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: http_client_builder()
+                .build()
+                .expect("Failed to create HTTP client"),
         }
     }
 }

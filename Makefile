@@ -2,14 +2,6 @@
 # Build and deployment targets for the film-finder application
 
 BINARY_NAME := film-finder
-INSTALL_DIR := /usr/local/bin
-SERVICE_NAME := film-finder
-SERVICE_FILE := /etc/systemd/system/$(SERVICE_NAME).service
-CONFIG_DIR := /etc/film-finder
-
-# SVC_USER must be passed explicitly (e.g. make install-service SVC_USER=myuser)
-# We use SVC_USER instead of USER to avoid conflict with the shell environment variable.
-SVC_USER ?=
 
 # Default target
 .PHONY: all
@@ -50,114 +42,26 @@ test:
 clean:
 	cargo clean
 
-# Install the binary to system (requires sudo)
-.PHONY: install
-install: release
-	sudo install -Dm755 target/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	@echo "Installed $(BINARY_NAME) to $(INSTALL_DIR)"
+# Docker targets
+.PHONY: docker-build
+docker-build:
+	docker build -t $(BINARY_NAME) .
 
-# Install production binary (requires sudo)
-.PHONY: install-production
-install-production: production
-	sudo install -Dm755 target/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	@echo "Installed $(BINARY_NAME) (production build) to $(INSTALL_DIR)"
+.PHONY: docker-up
+docker-up:
+	docker compose up -d
 
-# Shared helper for creating the systemd service (called by install-service targets)
-define install-service-impl
-	@if [ -z "$(SVC_USER)" ]; then \
-		echo "Error: SVC_USER variable required. Usage: make $@ SVC_USER=myuser"; \
-		exit 1; \
-	fi
-	@echo "Creating systemd service for user $(SVC_USER)..."
-	sudo mkdir -p $(CONFIG_DIR)
-	@if [ -f .env ]; then \
-		sudo cp .env $(CONFIG_DIR)/.env; \
-		sudo chmod 600 $(CONFIG_DIR)/.env; \
-		echo "Copied .env to $(CONFIG_DIR)/.env"; \
-	fi
-	@printf '%s\n' \
-		'[Unit]' \
-		'Description=Film Finder - Movie showtime aggregator' \
-		'After=network.target' \
-		'' \
-		'[Service]' \
-		'Type=simple' \
-		'User=$(SVC_USER)' \
-		'Group=$(SVC_USER)' \
-		'WorkingDirectory=$(CONFIG_DIR)' \
-		'EnvironmentFile=-$(CONFIG_DIR)/.env' \
-		'ExecStart=$(INSTALL_DIR)/$(BINARY_NAME) serve --daemon' \
-		'Restart=always' \
-		'RestartSec=10' \
-		'' \
-		'# Security hardening' \
-		'NoNewPrivileges=true' \
-		'ProtectSystem=strict' \
-		'ProtectHome=read-only' \
-		'PrivateTmp=true' \
-		'ReadWritePaths=$(CONFIG_DIR)' \
-		'' \
-		'[Install]' \
-		'WantedBy=multi-user.target' \
-		| sudo tee $(SERVICE_FILE) > /dev/null
-	sudo systemctl daemon-reload
-	sudo systemctl enable $(SERVICE_NAME)
-	@echo ""
-	@echo "Service installed and enabled!"
-	@echo "Commands:"
-	@echo "  sudo systemctl start $(SERVICE_NAME)    - Start the service"
-	@echo "  sudo systemctl stop $(SERVICE_NAME)     - Stop the service"
-	@echo "  sudo systemctl status $(SERVICE_NAME)   - Check status"
-	@echo "  sudo journalctl -u $(SERVICE_NAME) -f   - View logs"
-endef
+.PHONY: docker-down
+docker-down:
+	docker compose down
 
-# Create systemd service file (requires sudo)
-# Usage: make install-service SVC_USER=myuser
-.PHONY: install-service
-install-service: install
-	$(install-service-impl)
+.PHONY: docker-logs
+docker-logs:
+	docker compose logs -f
 
-# Install production service
-# Usage: make install-service-production SVC_USER=myuser
-.PHONY: install-service-production
-install-service-production: install-production
-	$(install-service-impl)
-
-# Start the service
-.PHONY: start
-start:
-	sudo systemctl start $(SERVICE_NAME)
-
-# Stop the service
-.PHONY: stop
-stop:
-	sudo systemctl stop $(SERVICE_NAME)
-
-# Restart the service
-.PHONY: restart
-restart:
-	sudo systemctl restart $(SERVICE_NAME)
-
-# Check service status
-.PHONY: status
-status:
-	sudo systemctl status $(SERVICE_NAME)
-
-# View service logs
-.PHONY: logs
-logs:
-	sudo journalctl -u $(SERVICE_NAME) -f
-
-# Uninstall service and binary
-.PHONY: uninstall
-uninstall:
-	-sudo systemctl stop $(SERVICE_NAME)
-	-sudo systemctl disable $(SERVICE_NAME)
-	-sudo rm -f $(SERVICE_FILE)
-	-sudo rm -f $(INSTALL_DIR)/$(BINARY_NAME)
-	-sudo rm -rf $(CONFIG_DIR)
-	sudo systemctl daemon-reload
-	@echo "Service and binary uninstalled"
+.PHONY: docker-scrape
+docker-scrape:
+	docker compose run --rm $(BINARY_NAME) scrape
 
 # Help
 .PHONY: help
@@ -175,16 +79,9 @@ help:
 	@echo "  make run-release        - Run in release mode"
 	@echo "  make test               - Run tests"
 	@echo ""
-	@echo "Installation targets (require sudo):"
-	@echo "  make install            - Install release binary to $(INSTALL_DIR)"
-	@echo "  make install-production - Install production binary to $(INSTALL_DIR)"
-	@echo "  make uninstall          - Remove service and binary"
-	@echo ""
-	@echo "Service targets (Pop!_OS/systemd, require sudo):"
-	@echo "  make install-service SVC_USER=myuser            - Install as systemd service (release)"
-	@echo "  make install-service-production SVC_USER=myuser - Install as systemd service (production)"
-	@echo "  make start              - Start the service"
-	@echo "  make stop               - Stop the service"
-	@echo "  make restart            - Restart the service"
-	@echo "  make status             - Check service status"
-	@echo "  make logs               - View service logs (follow mode)"
+	@echo "Docker targets:"
+	@echo "  make docker-build       - Build Docker image"
+	@echo "  make docker-up          - Start container (serve loop)"
+	@echo "  make docker-down        - Stop container"
+	@echo "  make docker-logs        - View container logs"
+	@echo "  make docker-scrape      - One-shot scrape in container"

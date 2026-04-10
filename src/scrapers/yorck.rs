@@ -10,7 +10,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::models::{Movie, MovieWithScreenings, Screening, Theater, TheaterData};
-use crate::scraper::Scraper;
+use crate::scraper::{http_client_builder, Scraper};
 
 const FILMS_URL: &str = "https://www.yorck.de/en/films";
 const CINEMAS_URL: &str = "https://www.yorck.de/en/cinemas";
@@ -23,7 +23,9 @@ pub struct YorckScraper {
 impl YorckScraper {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: http_client_builder()
+                .build()
+                .expect("Failed to create HTTP client"),
         }
     }
 }

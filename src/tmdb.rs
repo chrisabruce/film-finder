@@ -7,6 +7,8 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use crate::scraper::http_client_builder;
+
 const TMDB_API_BASE: &str = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE: &str = "https://image.tmdb.org/t/p/w500";
 
@@ -100,7 +102,9 @@ impl TmdbClient {
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
-            client: reqwest::Client::new(),
+            client: http_client_builder()
+                .build()
+                .expect("Failed to create HTTP client"),
         }
     }
 

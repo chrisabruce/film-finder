@@ -4,8 +4,28 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use reqwest::Client;
 
 use crate::models::TheaterData;
+
+/// Creates a reqwest ClientBuilder with optional SOCKS5 proxy.
+///
+/// If the `SOCKS_PROXY` env var is set (e.g. `socks5://127.0.0.1:1080`),
+/// the client will route requests through it. Otherwise, connects directly.
+pub fn http_client_builder() -> reqwest::ClientBuilder {
+    let builder = Client::builder();
+    if let Ok(proxy_url) = std::env::var("SOCKS_PROXY") {
+        match reqwest::Proxy::all(&proxy_url) {
+            Ok(proxy) => builder.proxy(proxy),
+            Err(e) => {
+                eprintln!("Warning: invalid SOCKS_PROXY '{}': {}", proxy_url, e);
+                builder
+            }
+        }
+    } else {
+        builder
+    }
+}
 
 /// Trait for cinema website scrapers.
 ///

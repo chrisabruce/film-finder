@@ -16,7 +16,7 @@ use reqwest::Client;
 use scraper::{Html, Selector};
 
 use crate::models::{Movie, MovieWithScreenings, Screening, Theater, TheaterData};
-use crate::scraper::Scraper;
+use crate::scraper::{http_client_builder, Scraper};
 
 const BASE_URL: &str = "https://www.critic.de/ov-movies-berlin/";
 
@@ -39,7 +39,7 @@ pub struct CriticScraper {
 impl CriticScraper {
     pub fn new() -> Self {
         Self {
-            client: Client::builder()
+            client: http_client_builder()
                 .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .build()
                 .expect("Failed to create HTTP client"),

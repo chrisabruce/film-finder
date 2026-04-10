@@ -19,7 +19,7 @@ fn debug_enabled() -> bool {
 }
 
 use crate::models::{Movie, MovieWithScreenings, Screening, Theater, TheaterData};
-use crate::scraper::Scraper;
+use crate::scraper::{http_client_builder, Scraper};
 
 /// Berlin UCI theater locations with their IDs, addresses, and coordinates.
 /// Format: (id, name, address, latitude, longitude)
@@ -82,7 +82,7 @@ impl UciScraper {
         headers.insert("Upgrade-Insecure-Requests", HeaderValue::from_static("1"));
 
         Self {
-            client: Client::builder()
+            client: http_client_builder()
                 .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                 .default_headers(headers)
                 .cookie_store(true)

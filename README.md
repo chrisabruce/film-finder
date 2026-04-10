@@ -1,62 +1,88 @@
-# film-finder
+# OV Berlin
+
+**https://ovberlin.com**
 
 Find English-language (OV/OmU) movie screenings in Berlin.
 
-I don't speak German, so finding movies in their original language is a pain. This scrapes cinema websites and dumps everything into a local SQLite database so I can quickly see what's playing in English.
+I don't speak German, so finding movies in their original language is a pain. This scrapes cinema websites, enriches them with TMDB metadata, and publishes a clean static site to Cloudflare Pages. Updated every 12 hours.
 
-## Usage
+## Quick start
 
 ```bash
-# Fetch latest showtimes (also pulls metadata from TMDB)
+# Build
+cargo build --release
+
+# Scrape showtimes (pulls metadata from TMDB if API key is set)
 film-finder scrape
 
-# List all films with screening counts
-film-finder films
-
-# Show OV/OmU screenings only
-film-finder ov
-
-# Search for a specific movie
-film-finder search avatar
-
-# Show everything
-film-finder list
-
-# Generate static website
+# Generate static site
 film-finder static
 
 # Deploy to Cloudflare Pages
 film-finder deploy
 
-# Start fresh
-film-finder db-reset
+# Or run the full loop (scrape + static + deploy every 12h)
+film-finder serve
 ```
 
-## TMDB Integration
+## Docker
 
-The scraper can pull additional metadata from TMDB (The Movie Database) to get normalized English titles, release years, genres, and overviews. German releases sometimes have different names, so this helps identify what movies actually are.
+```bash
+# Build and run
+docker compose up -d
 
-To enable it:
+# One-shot scrape
+docker compose run --rm film-finder scrape
 
-1. Get a free API key from https://www.themoviedb.org/settings/api
-2. Create a `.env` file: `echo 'TMDB_API_KEY=your_key_here' > .env`
+# Logs
+docker compose logs -f
+```
 
-If no API key is set, scraping still works - you just won't get the extra metadata.
+The container runs `film-finder serve` in the foreground, persisting the database and generated HTML in a Docker volume.
+
+## Configuration
+
+Create a `.env` file with:
+
+```
+# Required for movie metadata (free at https://www.themoviedb.org/settings/api)
+TMDB_API_KEY=your_key_here
+
+# Required for deployment
+CLOUDFLARE_ACCOUNT_ID=your_account_id
+CLOUDFLARE_API_TOKEN=your_api_token
+CLOUDFLARE_PROJECT_NAME=your_project_name
+
+# Optional
+UPDATE_INTERVAL_HOURS=12
+STATIC_OUTPUT_DIR=html
+SOCKS_PROXY=socks5://host:port
+```
+
+The `SOCKS_PROXY` variable routes all scraping traffic through a SOCKS5 proxy, useful when running from cloud IPs that might be blocked. The Cloudflare deployment is not affected.
+
+If no `TMDB_API_KEY` is set, scraping still works -- you just won't get enriched metadata.
+
+## Commands
+
+```
+film-finder scrape          Fetch latest showtimes from all sources
+film-finder films           List all movies with screening counts
+film-finder list            Show all upcoming screenings
+film-finder ov              Show only OV/OmU screenings
+film-finder search <query>  Search for a movie by title (--ov for OV only)
+film-finder static [path]   Generate static website (default: html/)
+film-finder deploy          Deploy static site to Cloudflare Pages
+film-finder serve           Start service (scrape + static + deploy every N hours)
+film-finder stop            Stop the background service
+film-finder db-reset        Delete the database and start fresh
+```
 
 ## Deploying to Cloudflare Pages
 
-The static site can be deployed to Cloudflare Pages for free hosting.
-
-### Prerequisites
-
-- Node.js/npm installed (for the wrangler CLI)
-- A Cloudflare account
-
-### Setup
-
 1. Create a Cloudflare Pages project:
    - Go to https://dash.cloudflare.com/ > Pages > Create a project > Direct Upload
-   - Name it (e.g., `film-finder`)
+   - Name it (e.g., `ov-berlin`)
    - Upload any placeholder file to create the project
 
 2. Get your Cloudflare credentials:
@@ -64,61 +90,48 @@ The static site can be deployed to Cloudflare Pages for free hosting.
    - **API Token**: Create at https://dash.cloudflare.com/profile/api-tokens
      - Use "Create Custom Token"
      - Permissions: Account > Cloudflare Pages > Edit
-     - Account Resources: Include your account
 
-3. Add to your `.env` file:
-   ```
-   CLOUDFLARE_ACCOUNT_ID=your_account_id
-   CLOUDFLARE_API_TOKEN=your_api_token
-   CLOUDFLARE_PROJECT_NAME=film-finder
-   ```
-
-### Deploying
-
-```bash
-# Generate the static site
-film-finder static
-
-# Deploy to Cloudflare Pages
-film-finder deploy
-```
+3. Add credentials to `.env` and run `film-finder deploy`
 
 Your site will be available at `https://<project-name>.pages.dev`.
 
 ## What it scrapes
 
-- UCI Kinowelt (Berlin Eastgate, East Side Gallery, Gropius Passagen, Potsdam)
-- CineStar (CUBIX Alexanderplatz, Treptower Park, Tegel, Hellersdorf, KulturBrauerei)
-- Yorck (Babylon Kreuzberg, Capitol Dahlem, Cinema Paris, Delphi Filmpalast, delphi LUX, Filmtheater am Friedrichshain, Kant Kino, Neues Off, Odeon, Passage, Rollberg, Yorck, Blauer Stern)
+| Source | Theaters |
+|--------|----------|
+| UCI Kinowelt | Eastgate, East Side Gallery, Gropius Passagen, Potsdam |
+| CineStar | CUBIX Alexanderplatz, Tegel, Hellersdorf, KulturBrauerei |
+| Yorck Kinos | 14 theaters (Babylon, Cinema Paris, Delphi, Odeon, Passage, Rollberg, etc.) |
+| critic.de | ~50 Berlin cinemas with OV screenings |
 
-The data gets stored in `film-finder.db` in the current directory.
+**OV** = Original Version (no dubbing)
+**OmU** = Original mit Untertiteln (original with German subtitles)
+**OmeU** = Original mit englischen Untertiteln (original with English subtitles)
 
-OV = Original Version (no dubbing)
-OmU = Original mit Untertiteln (original with German subtitles)
-OmeU = Original mit englischen Untertiteln (original with English subtitles)
-
-## Building
+## Makefile
 
 ```bash
-cargo build --release
+make help          # Show all targets
+make build         # Dev build
+make release       # Optimized build
+make test          # Run tests
+make docker-build  # Build Docker image
+make docker-up     # Start container
+make docker-scrape # One-shot scrape in container
 ```
 
-Needs Rust 1.70+ (uses edition 2021).
-
 ## Adding more cinemas
-
-The scraper is set up to be extensible. To add a new cinema chain:
 
 1. Create `src/scrapers/whatever.rs`
 2. Implement the `Scraper` trait (see `uci.rs` for an example)
 3. Add it to the scraper list in `main.rs`
 
-The main things you need to figure out for each site:
+The main things to figure out for each site:
 - How to get the program page for each theater
 - How movie containers are structured in the HTML
-- Where the showtime links are and how dates/times are encoded
+- Where showtime links are and how dates/times are encoded
 - How OV screenings are marked (usually a CSS class or legend)
 
-## Why Rust?
+## Building
 
-Async HTTP + HTML parsing is well-supported, SQLite bindings are solid, and it compiles to a single binary I can just copy around.
+Needs Rust 1.70+ and `cargo build --release`. Compiles to a single binary with SQLite statically linked.

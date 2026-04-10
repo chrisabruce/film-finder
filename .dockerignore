@@ -1,0 +1,7 @@
+target/
+html/
+*.db
+*.pid
+*.log
+.env
+.git/

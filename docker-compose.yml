@@ -1,0 +1,20 @@
+services:
+  film-finder:
+    build: .
+    container_name: film-finder
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override paths for container layout
+      - PID_FILE=/data/film-finder.pid
+      - LOG_FILE=/data/film-finder.log
+      - STATIC_OUTPUT_DIR=/data/html
+      # Optional: proxy for scraping from cloud IPs
+      # - SOCKS_PROXY=socks5://host:port
+    volumes:
+      - film-finder-data:/data
+    # One-shot scrape instead of serve loop:
+    #   docker compose run --rm film-finder scrape
+
+volumes:
+  film-finder-data:
