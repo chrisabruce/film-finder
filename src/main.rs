@@ -24,7 +24,7 @@ use chrono_tz::Europe::Berlin;
 
 use crate::db::Database;
 use crate::scraper::Scraper;
-use crate::scrapers::{CineStarScraper, CriticScraper, UciScraper, YorckScraper};
+use crate::scrapers::{CineStarScraper, CriticScraper, YorckScraper};
 use crate::static_site::generate_static_site;
 use crate::tmdb::{load_api_key, TmdbClient};
 
@@ -116,8 +116,10 @@ async fn cmd_scrape() -> Result<()> {
     let db = Database::open(DB_PATH)?;
 
     // Add more scrapers here as they're implemented
+    // Note: UCI scraper disabled — Cloudflare blocks proxy/cloud IPs.
+    // UCI showtime data is covered by the critic.de scraper instead.
     let scrapers: Vec<Box<dyn Scraper>> = vec![
-        Box::new(UciScraper::new()),
+        // Box::new(UciScraper::new()),
         Box::new(CineStarScraper::new()),
         Box::new(YorckScraper::new()),
         Box::new(CriticScraper::new()),

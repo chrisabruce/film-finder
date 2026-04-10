@@ -15,7 +15,11 @@ use crate::models::TheaterData;
 pub fn http_client_builder() -> reqwest::ClientBuilder {
     let builder = Client::builder();
     if let Ok(proxy_url) = std::env::var("SOCKS_PROXY") {
-        match reqwest::Proxy::all(&proxy_url) {
+        let proxy_url = proxy_url.trim();
+        if proxy_url.is_empty() {
+            return builder;
+        }
+        match reqwest::Proxy::all(proxy_url) {
             Ok(proxy) => builder.proxy(proxy),
             Err(e) => {
                 eprintln!("Warning: invalid SOCKS_PROXY '{}': {}", proxy_url, e);

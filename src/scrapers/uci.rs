@@ -55,6 +55,10 @@ const BERLIN_THEATERS: &[(&str, &str, &str, f64, f64)] = &[
 ];
 
 /// UCI Kinowelt website scraper.
+///
+/// Currently disabled — Cloudflare blocks proxy/cloud IPs on uci-kinowelt.de.
+/// UCI showtime data is covered by the critic.de scraper instead.
+/// If re-enabled, uses the /list view which has server-rendered showtimes.
 pub struct UciScraper {
     client: Client,
     theater_ids: Vec<String>,
@@ -106,7 +110,7 @@ impl UciScraper {
     ) -> Result<TheaterData> {
         let slug = theater_name_to_slug(theater_name);
         let url = format!(
-            "https://www.uci-kinowelt.de/kinoprogramm/{}/{}",
+            "https://www.uci-kinowelt.de/kinoprogramm/{}/{}/list",
             slug, theater_id
         );
 
@@ -124,7 +128,6 @@ impl UciScraper {
             .await
             .context("Failed to read response body")?;
 
-        let slug = theater_name_to_slug(theater_name);
         let theater = Theater {
             external_id: theater_id.to_string(),
             name: theater_name.to_string(),
@@ -298,10 +301,7 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
         // Parse all performance badges directly (they carry data-date and data-time)
         let performances: Vec<_> = film_elem.select(&performance_selector).collect();
         if debug && performances.is_empty() {
-            eprintln!(
-                "[DEBUG] Movie '{}' has no performance badges",
-                title
-            );
+            eprintln!("[DEBUG] Movie '{}' has no performance badges", title);
         }
 
         for perf in performances {
@@ -363,8 +363,8 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
             let is_omu = class_attr.contains("attribute-omu")
                 && !class_attr.contains("attribute-omeu")
                 && !class_attr.contains("attribute-omengu");
-            let is_english_subs = class_attr.contains("attribute-omeu")
-                || class_attr.contains("attribute-omengu");
+            let is_english_subs =
+                class_attr.contains("attribute-omeu") || class_attr.contains("attribute-omengu");
             let is_3d = class_attr.contains("attribute-3d");
             let screening_type = detect_screening_type(class_attr);
 
@@ -412,8 +412,7 @@ fn parse_theater_page(html: &str) -> Result<Vec<MovieWithScreenings>> {
 fn is_section_ov_default(film_html: &str) -> bool {
     // If the legend declares OV but there are no individual attribute-ov badges,
     // all performances in this section are OV.
-    film_html.contains("data-attribute-id=\"ov\"")
-        && !film_html.contains("attribute-ov")
+    film_html.contains("data-attribute-id=\"ov\"") && !film_html.contains("attribute-ov")
 }
 
 /// Parses runtime and rating from info text.
