@@ -1173,7 +1173,7 @@ fn generate_html(movies: &[MovieData], theaters: &[TheaterInfo], cache_version: 
         r#"    </main>
 
     <footer class="site-footer">
-        <p>Developed for Film Lovers by the filmmakers at: < href="https://secedastudios.com" target="_blank" rel="noopener">Seceda Studios</a><br/>
+        <p>Developed for Film Lovers by the filmmakers at: <a href="https://secedastudios.com" target="_blank" rel="noopener">Seceda Studios</a><br/>
             If you are also a filmmaker/actor/creator/crew please join us on our 100% Free/Ad Free Directory: <a href="https://slatehub.com" target="_blank" rel="noopener">SlateHub</a></p>
         <p class="last-updated">Last updated: {}</p>
     </footer>
